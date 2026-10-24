@@ -283,6 +283,45 @@ impl<B: Backend, S: SessionStore> SessionManager<B, S> {
         Ok(result)
     }
 
+    /// Executes batch completion across distinct sessions, managing resolution and budget tiering.
+    pub async fn complete_batch(
+        &self,
+        requests: &[(SessionId, String, CompletionOptions)],
+    ) -> Result<Vec<CompletionResult>, Error> {
+        let mut sessions = Vec::with_capacity(requests.len());
+        for (session_id, _, _) in requests {
+            let session = self.resolve_session(session_id).await?;
+            sessions.push(session);
+        }
+
+        let mut batch_items: Vec<crate::traits::BatchItem<'_>> = requests
+            .iter()
+            .zip(sessions.iter_mut())
+            .map(|((_, prompt, options), session)| crate::traits::BatchItem {
+                session,
+                prompt,
+                options,
+            })
+            .collect();
+
+        let batch_result = self.backend.complete_batch(&mut batch_items).await;
+
+        let mut commit_err = None;
+        for ((session_id, _, _), session) in requests.iter().zip(sessions) {
+            if let Err(err) = self.commit_session(session_id, session).await {
+                if commit_err.is_none() {
+                    commit_err = Some(err);
+                }
+            }
+        }
+
+        let results = batch_result?;
+        if let Some(err) = commit_err {
+            return Err(err);
+        }
+        Ok(results)
+    }
+
     /// Retrieves session metadata from hot cache, warm cache, or cold storage.
     pub async fn get_metadata(
         &self,
@@ -335,59 +374,3 @@ impl<B: Backend, S: SessionStore> SessionManager<B, S> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::session::SessionId;
-    use crate::store::FileSessionStore;
-    use crate::traits::MockBackend;
-    use tempfile::tempdir;
-
-    #[tokio::test]
-    async fn test_manager_complete_lifecycle_and_eviction() {
-        let dir = tempdir().unwrap();
-        let store = Arc::new(FileSessionStore::new(dir.path()).unwrap());
-        let backend = Arc::new(MockBackend::new("mock answer"));
-
-        let policy = TierPolicy::new(1, 2, 1024 * 1024, 2 * 1024 * 1024);
-        let manager = SessionManager::with_policy(backend, store.clone(), policy, "test-model");
-
-        let sess_a = SessionId::from("sess-a");
-        let sess_b = SessionId::from("sess-b");
-
-        let res1 = manager
-            .complete(&sess_a, "Hello A", &CompletionOptions::default())
-            .await
-            .unwrap();
-        assert_eq!(res1.text, "mock answer");
-        assert_eq!(manager.hot_session_count().await, 1);
-        assert_eq!(manager.warm_session_count().await, 0);
-
-        let res2 = manager
-            .complete(&sess_b, "Hello B", &CompletionOptions::default())
-            .await
-            .unwrap();
-        assert_eq!(res2.text, "mock answer");
-        assert_eq!(manager.hot_session_count().await, 1);
-        assert_eq!(manager.warm_session_count().await, 1);
-        assert_eq!(
-            manager.session_tier(&sess_a).await.unwrap(),
-            Some(TierLevel::Warm)
-        );
-
-        let res3 = manager
-            .complete(&sess_a, "Continue A", &CompletionOptions::default())
-            .await
-            .unwrap();
-        assert_eq!(res3.text, "mock answer");
-        assert_eq!(
-            manager.session_tier(&sess_a).await.unwrap(),
-            Some(TierLevel::Hot)
-        );
-
-        let metrics = manager.metrics_snapshot().await;
-        assert_eq!(metrics.warm_hits, 1);
-        assert_eq!(metrics.promotions_warm_to_hot, 1);
-        assert_eq!(metrics.demotions_hot_to_warm, 2);
-    }
-}

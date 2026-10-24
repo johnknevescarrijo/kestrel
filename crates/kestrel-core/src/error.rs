@@ -3,7 +3,7 @@
 use thiserror::Error;
 
 /// Core errors occurring across backend, session, and scheduler operations.
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum Error {
     /// Failed to execute model inference.
     #[error("backend inference failed: {reason}. Check model configuration or context length.")]
