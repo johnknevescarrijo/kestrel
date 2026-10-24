@@ -113,3 +113,32 @@ async fn test_session_lru_eviction_and_restoration_from_disk() {
     let loaded_b = store.load(&sess_b).await.expect("store read failed");
     assert!(loaded_b.is_some(), "session B must now be in cold storage");
 }
+
+#[tokio::test]
+async fn test_session_kv_state_populated_and_persisted() {
+    let dir = tempdir().expect("failed to create temp dir");
+    let store = Arc::new(FileSessionStore::new(dir.path()).expect("store init failed"));
+    let backend = Arc::new(MockBackend::new("World!"));
+    let manager = SessionManager::new(backend, store.clone(), 2, "mock-model");
+
+    let session_id = SessionId::from("kv-state-test-sess");
+    let options = CompletionOptions::default();
+
+    let res = manager
+        .complete(&session_id, "Hello", &options)
+        .await
+        .expect("completion failed");
+    assert_eq!(res.text, "World!");
+
+    let snapshot = store
+        .load(&session_id)
+        .await
+        .expect("store read failed")
+        .expect("snapshot must exist");
+
+    assert!(
+        !snapshot.kv_state.is_empty(),
+        "snapshot kv_state must not be empty after inference"
+    );
+    assert_eq!(snapshot.kv_state.len(), snapshot.tokens.len() * 4);
+}

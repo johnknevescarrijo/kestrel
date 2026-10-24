@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use kestrel_core::session::SessionId;
 use kestrel_core::store::FileSessionStore;
-use kestrel_core::traits::{Backend, CompletionOptions};
+use kestrel_core::traits::{Backend, CompletionOptions, SessionStore};
 use kestrel_core::SessionManager;
 use kestrel_llama::LlamaBackend;
 use tempfile::tempdir;
@@ -79,7 +79,7 @@ async fn test_qwen_e2e_session_prefill_reduction() {
 
     let dir = tempdir().expect("failed to create temp dir");
     let store = Arc::new(FileSessionStore::new(dir.path()).expect("failed to init store"));
-    let manager = SessionManager::new(Arc::new(backend), store, 4, "qwen2.5-0.5b");
+    let manager = SessionManager::new(Arc::new(backend), store.clone(), 4, "qwen2.5-0.5b");
 
     let session_id = SessionId::from("e2e-persistent-sess-1");
     let options = CompletionOptions { max_tokens: 32 };
@@ -121,4 +121,16 @@ async fn test_qwen_e2e_session_prefill_reduction() {
         res2.prefill_tokens,
         res1.prefill_tokens
     );
+
+    // Verify kv_state is populated and persisted on disk after inference
+    let snapshot = store
+        .load(&session_id)
+        .await
+        .expect("failed to load snapshot")
+        .expect("snapshot must exist");
+    assert!(
+        !snapshot.kv_state.is_empty(),
+        "E2E session kv_state must not be empty after inference"
+    );
+    assert_eq!(snapshot.kv_state.len(), snapshot.tokens.len() * 4);
 }

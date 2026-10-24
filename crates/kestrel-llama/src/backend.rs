@@ -217,6 +217,12 @@ impl Backend for LlamaBackend {
         }
 
         session.tokens = all_tokens;
+        // Populate serialized binary KV state (little-endian u32 token IDs)
+        session.kv_state = session
+            .tokens
+            .iter()
+            .flat_map(|&t| t.to_le_bytes())
+            .collect();
         session.record_access(session.tokens.len(), kv_size);
         session.backend_handle = Some(session_handle as Arc<dyn Any + Send + Sync>);
 
@@ -239,11 +245,25 @@ fn create_restored_session(
             reason: format!("{err:?}"),
         })?;
 
-    if !session.tokens.is_empty() {
-        let llama_tokens: Vec<Token> = session.tokens.iter().map(|&t| Token(t as i32)).collect();
+    // Prefer explicit token array; fall back to binary kv_state if present
+    let tokens: Vec<Token> = if !session.tokens.is_empty() {
+        session.tokens.iter().map(|&t| Token(t as i32)).collect()
+    } else if !session.kv_state.is_empty() {
+        session
+            .kv_state
+            .chunks_exact(4)
+            .map(|chunk| {
+                let id = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                Token(id as i32)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
+    if !tokens.is_empty() {
         new_sess
-            .advance_context_with_tokens(&llama_tokens)
+            .advance_context_with_tokens(&tokens)
             .map_err(|err| LlamaError::ContextAdvance {
                 reason: format!("{err:?}"),
             })?;
@@ -256,4 +276,31 @@ fn create_restored_session(
     }
 
     Ok(new_sess)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kestrel_core::session::SessionId;
+
+    #[test]
+    fn test_kv_state_token_deserialization() {
+        let mut session = Session::new(SessionId::from("sess-test"), "test-model");
+        let token_ids: Vec<u32> = vec![101, 102, 103, 104];
+        session.kv_state = token_ids.iter().flat_map(|&t| t.to_le_bytes()).collect();
+
+        let decoded_tokens: Vec<Token> = session
+            .kv_state
+            .chunks_exact(4)
+            .map(|chunk| {
+                let id = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                Token(id as i32)
+            })
+            .collect();
+
+        assert_eq!(
+            decoded_tokens,
+            vec![Token(101), Token(102), Token(103), Token(104)]
+        );
+    }
 }

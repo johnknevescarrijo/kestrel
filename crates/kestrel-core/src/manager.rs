@@ -50,27 +50,27 @@ impl<B: Backend, S: SessionStore> SessionManager<B, S> {
         debug!(session = %session_id, "Resolving session for inference");
 
         // 1. Check hot cache first (remove temporarily while running inference to release LRU lock)
-        let mut session = {
+        let hot_session = {
             let mut lru = self.lru.lock().await;
             lru.remove(session_id)
         };
 
-        // 2. Cache miss: load snapshot from cold store or create a new session
-        if session.is_none() {
-            debug!(session = %session_id, "Hot cache miss, querying cold storage");
-            session = match self.store.load(session_id).await? {
-                Some(snapshot) => {
-                    info!(session = %session_id, "Restored session snapshot from cold storage");
-                    Some(Session::from_snapshot(snapshot))
+        let mut session = match hot_session {
+            Some(hot) => hot,
+            None => {
+                debug!(session = %session_id, "Hot cache miss, querying cold storage");
+                match self.store.load(session_id).await? {
+                    Some(snapshot) => {
+                        info!(session = %session_id, "Restored session snapshot from cold storage");
+                        Session::from_snapshot(snapshot)
+                    }
+                    None => {
+                        info!(session = %session_id, "Creating fresh session");
+                        Session::new(session_id.clone(), &self.model_id)
+                    }
                 }
-                None => {
-                    info!(session = %session_id, "Creating fresh session");
-                    Some(Session::new(session_id.clone(), &self.model_id))
-                }
-            };
-        }
-
-        let mut session = session.expect("session must be resolved or initialized");
+            }
+        };
 
         // 3. Execute backend inference with session context
         let result = match self

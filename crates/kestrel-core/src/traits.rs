@@ -139,6 +139,12 @@ impl Backend for MockBackend {
             session.tokens.push(start_tok + i as u32);
         }
 
+        session.kv_state = session
+            .tokens
+            .iter()
+            .flat_map(|&t| t.to_le_bytes())
+            .collect();
+
         session.record_access(session.tokens.len(), session.tokens.len() * 4);
 
         Ok(CompletionResult {
