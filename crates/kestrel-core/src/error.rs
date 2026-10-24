@@ -28,6 +28,31 @@ pub enum Error {
         id: String,
     },
 
+    /// Failed to serialize or deserialize session state.
+    #[error("session serialization failed: {reason}. Ensure session snapshot is not corrupted.")]
+    SessionSerializationFailed {
+        /// Underlying failure reason.
+        reason: String,
+    },
+
+    /// An error occurred during file storage I/O for a session.
+    #[error("session storage I/O failed at '{path}': {reason}. Check directory permissions and disk space.")]
+    SessionStorageFailed {
+        /// Path to the session file or directory.
+        path: String,
+        /// Underlying failure reason.
+        reason: String,
+    },
+
+    /// Invalid session identifier supplied (e.g. path traversal attempt).
+    #[error("invalid session id '{id}': {reason}. Session IDs must only contain alphanumeric characters, hyphens, and underscores.")]
+    InvalidSessionId {
+        /// The invalid session ID.
+        id: String,
+        /// Reason why it is invalid.
+        reason: String,
+    },
+
     /// An internal or unexpected task failure.
     #[error("internal runtime error: {reason}. Please check server logs for details.")]
     Internal {

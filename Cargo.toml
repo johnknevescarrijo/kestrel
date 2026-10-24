@@ -43,3 +43,8 @@ clap = { version = "4.5", features = ["derive"] }
 
 # LLM Backend
 llama_cpp = "0.3.2"
+
+# Storage & Benchmarking
+bincode = "1"
+criterion = "0.5"
+tempfile = "3"
