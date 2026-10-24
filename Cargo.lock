@@ -724,6 +724,7 @@ name = "kestrel-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "clap",
  "kestrel-core",
  "kestrel-llama",
