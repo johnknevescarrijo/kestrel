@@ -154,7 +154,10 @@ async fn test_50_concurrent_http_clients_with_tiering() {
 
     let mut successful_responses = 0;
     for task in tasks {
-        let response = task.await.expect("Task panicked").expect("HTTP dispatch failed");
+        let response = task
+            .await
+            .expect("Task panicked")
+            .expect("HTTP dispatch failed");
         assert_eq!(response.status(), StatusCode::OK);
 
         let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
@@ -188,7 +191,9 @@ async fn test_50_concurrent_http_clients_with_tiering() {
         "Expected warm to cold demotions under stress"
     );
 
-    let batch_m = metrics.batch_metrics.expect("Missing batch metrics in response");
+    let batch_m = metrics
+        .batch_metrics
+        .expect("Missing batch metrics in response");
     assert_eq!(batch_m.total_batched_requests, 50);
     assert!(batch_m.max_observed_batch_size > 1);
 }

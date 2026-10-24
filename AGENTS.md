@@ -315,9 +315,9 @@ anterior.**
 
 
 ### M5 — Concorrência e batching
-- [ ] Continuous batching de sessões hot (uma forward pass, N sessões).
-- [ ] Stress test com 50 clientes concorrentes.
-- **Aceite:** throughput >= 2x M4 em benchmark padrão.
+- [x] Continuous batching de sessões hot (uma forward pass, N sessões).
+- [x] Stress test com 50 clientes concorrentes.
+- **Aceite:** throughput >= 2x M4 em benchmark padrão. (Concluído)
 
 ### Pós-v1.0 (backlog)
 - Suporte a MLX (Apple Silicon).

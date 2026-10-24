@@ -229,8 +229,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Arc::new(FileSessionStore::new(dir.path()).unwrap());
         let backend = Arc::new(
-            MockBackend::new("batch response")
-                .with_forward_pass_delay(Duration::from_millis(5)),
+            MockBackend::new("batch response").with_forward_pass_delay(Duration::from_millis(5)),
         );
 
         let policy = TierPolicy::new(8, 16, 10 * 1024 * 1024, 20 * 1024 * 1024);
@@ -275,8 +274,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Arc::new(FileSessionStore::new(dir.path()).unwrap());
         let backend = Arc::new(
-            MockBackend::new("batch response")
-                .with_forward_pass_delay(Duration::from_millis(5)),
+            MockBackend::new("batch response").with_forward_pass_delay(Duration::from_millis(5)),
         );
 
         let policy = TierPolicy::new(8, 16, 10 * 1024 * 1024, 20 * 1024 * 1024);

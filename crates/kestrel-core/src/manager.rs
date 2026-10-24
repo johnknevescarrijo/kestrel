@@ -373,4 +373,3 @@ impl<B: Backend, S: SessionStore> SessionManager<B, S> {
         Ok(sessions)
     }
 }
-

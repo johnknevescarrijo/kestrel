@@ -274,10 +274,7 @@ pub async fn chat_completions<B: Backend + 'static, S: SessionStore + 'static>(
         );
 
         if is_none_tool_choice {
-            let result = state
-                .scheduler
-                .submit(session_id, prompt, options)
-                .await?;
+            let result = state.scheduler.submit(session_id, prompt, options).await?;
             let created = current_timestamp();
             return Ok(Json(make_chat_response(created, model, &result)).into_response());
         }
@@ -344,10 +341,7 @@ pub async fn chat_completions<B: Backend + 'static, S: SessionStore + 'static>(
 
         Ok(Json(response).into_response())
     } else {
-        let result = state
-            .scheduler
-            .submit(session_id, prompt, options)
-            .await?;
+        let result = state.scheduler.submit(session_id, prompt, options).await?;
 
         let created = current_timestamp();
         Ok(Json(make_chat_response(created, model, &result)).into_response())

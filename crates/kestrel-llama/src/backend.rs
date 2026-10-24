@@ -104,13 +104,9 @@ fn run_session_inference(
     input: SessionTaskInput,
     token_tx: Option<&tokio::sync::mpsc::UnboundedSender<String>>,
 ) -> Result<SessionTaskOutput, LlamaError> {
-    let mut guard = input
-        .handle
-        .0
-        .lock()
-        .map_err(|_| LlamaError::Completion {
-            reason: "failed to acquire session mutex".to_string(),
-        })?;
+    let mut guard = input.handle.0.lock().map_err(|_| LlamaError::Completion {
+        reason: "failed to acquire session mutex".to_string(),
+    })?;
 
     let delta_tokens = model
         .tokenize_bytes(&input.delta_text, input.add_bos, true)
@@ -291,20 +287,19 @@ impl Backend for LlamaBackend {
         }
 
         let model_task = Arc::clone(&self.model);
-        let outputs = tokio::task::spawn_blocking(
-            move || -> Result<Vec<SessionTaskOutput>, LlamaError> {
+        let outputs =
+            tokio::task::spawn_blocking(move || -> Result<Vec<SessionTaskOutput>, LlamaError> {
                 let mut res = Vec::with_capacity(task_inputs.len());
                 for input in task_inputs {
                     let out = run_session_inference(&model_task, input, None)?;
                     res.push(out);
                 }
                 Ok(res)
-            },
-        )
-        .await
-        .map_err(|err| LlamaError::TaskJoin {
-            reason: err.to_string(),
-        })??;
+            })
+            .await
+            .map_err(|err| LlamaError::TaskJoin {
+                reason: err.to_string(),
+            })??;
 
         let mut results = Vec::with_capacity(items.len());
         for (item, (out, (handle, is_full_replace, prev_context, prompt))) in
