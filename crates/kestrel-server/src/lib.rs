@@ -4,6 +4,7 @@
 
 pub mod error;
 pub mod handlers;
+pub mod session_handlers;
 pub mod types;
 
 use std::sync::Arc;

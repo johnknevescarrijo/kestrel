@@ -4,20 +4,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use kestrel_core::session::SessionId;
 use kestrel_core::traits::{Backend, CompletionOptions, SessionStore};
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 use crate::error::ServerError;
 use crate::types::{
-    format_chatml_prompt, ChatChoice, ChatChunkChoice, ChatCompletionChunk, ChatCompletionRequest,
-    ChatCompletionResponse, ChatDelta, DeleteSessionResponse, ModelListResponse, ModelObject,
-    SessionStats, SessionsListResponse, Usage,
+    format_chatml_prompt, format_chatml_prompt_with_tools, ChatChoice, ChatChunkChoice,
+    ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, ChatDelta,
+    ModelListResponse, ModelObject, Usage,
 };
 
 /// Shared application state containing session manager and model metadata.
@@ -74,7 +74,7 @@ pub async fn list_models<B: Backend, S: SessionStore>(
 }
 
 /// Validates that a session ID string only contains permitted characters.
-fn validate_and_create_session_id(id: &str) -> Result<SessionId, ServerError> {
+pub(crate) fn validate_and_create_session_id(id: &str) -> Result<SessionId, ServerError> {
     if id.is_empty() {
         return Err(ServerError::BadRequest {
             reason: "session ID cannot be empty".to_string(),
@@ -269,6 +269,104 @@ pub async fn chat_completions<B: Backend + 'static, S: SessionStore + 'static>(
             })?;
 
         Ok(response)
+    } else if let Some(tools) = req.tools.as_ref().filter(|t| !t.is_empty()) {
+        let is_none_tool_choice = matches!(
+            req.tool_choice.as_ref(),
+            Some(serde_json::Value::String(s)) if s == "none"
+        );
+
+        if is_none_tool_choice {
+            let result = state
+                .manager
+                .complete(&session_id, &prompt, &options)
+                .await?;
+
+            let created = current_timestamp();
+            let response = ChatCompletionResponse {
+                id: format!("chatcmpl-{created}"),
+                object: "chat.completion".to_string(),
+                created,
+                model,
+                choices: vec![ChatChoice {
+                    index: 0,
+                    message: crate::types::ChatMessage {
+                        role: "assistant".to_string(),
+                        content: result.text,
+                        tool_calls: None,
+                    },
+                    finish_reason: Some("stop".to_string()),
+                }],
+                usage: Usage {
+                    prompt_tokens: result.prefill_tokens,
+                    completion_tokens: result.generated_tokens,
+                    total_tokens: result.prefill_tokens + result.generated_tokens,
+                },
+            };
+
+            return Ok(Json(response).into_response());
+        }
+
+        let require_tool = match req.tool_choice.as_ref() {
+            Some(serde_json::Value::String(s)) => s == "required",
+            Some(serde_json::Value::Object(map)) => map.contains_key("function"),
+            _ => false,
+        };
+
+        let tool_prompt = format_chatml_prompt_with_tools(&req.messages, Some(tools));
+        let max_retries = req.max_tool_retries.unwrap_or(3);
+        let runtime = kestrel_tools::ToolRuntime::new(max_retries);
+
+        let (model_output, result) = runtime
+            .complete_with_tools(
+                &state.manager,
+                &session_id,
+                &tool_prompt,
+                &options,
+                tools,
+                require_tool,
+            )
+            .await?;
+
+        let created = current_timestamp();
+        let choice = match model_output {
+            kestrel_tools::ModelOutput::ToolCalls(calls) => {
+                let openai_calls: Vec<kestrel_tools::OpenAiToolCall> =
+                    calls.iter().map(|c| c.to_openai()).collect();
+                ChatChoice {
+                    index: 0,
+                    message: crate::types::ChatMessage {
+                        role: "assistant".to_string(),
+                        content: String::new(),
+                        tool_calls: Some(openai_calls),
+                    },
+                    finish_reason: Some("tool_calls".to_string()),
+                }
+            }
+            kestrel_tools::ModelOutput::Text(text) => ChatChoice {
+                index: 0,
+                message: crate::types::ChatMessage {
+                    role: "assistant".to_string(),
+                    content: text,
+                    tool_calls: None,
+                },
+                finish_reason: Some("stop".to_string()),
+            },
+        };
+
+        let response = ChatCompletionResponse {
+            id: format!("chatcmpl-{created}"),
+            object: "chat.completion".to_string(),
+            created,
+            model,
+            choices: vec![choice],
+            usage: Usage {
+                prompt_tokens: result.prefill_tokens,
+                completion_tokens: result.generated_tokens,
+                total_tokens: result.prefill_tokens + result.generated_tokens,
+            },
+        };
+
+        Ok(Json(response).into_response())
     } else {
         let result = state
             .manager
@@ -286,6 +384,7 @@ pub async fn chat_completions<B: Backend + 'static, S: SessionStore + 'static>(
                 message: crate::types::ChatMessage {
                     role: "assistant".to_string(),
                     content: result.text,
+                    tool_calls: None,
                 },
                 finish_reason: Some("stop".to_string()),
             }],
@@ -300,54 +399,5 @@ pub async fn chat_completions<B: Backend + 'static, S: SessionStore + 'static>(
     }
 }
 
-/// `GET /kestrel/sessions`
-pub async fn list_sessions<B: Backend, S: SessionStore>(
-    State(state): State<Arc<AppState<B, S>>>,
-) -> Result<Json<SessionsListResponse>, ServerError> {
-    let sessions = state.manager.list_sessions().await?;
-    let hot_sessions = state.manager.hot_session_count().await;
-    let hot_capacity = state.manager.hot_capacity();
-
-    let stats = SessionStats {
-        hot_sessions,
-        total_sessions: sessions.len(),
-        hot_capacity,
-    };
-
-    Ok(Json(SessionsListResponse { sessions, stats }))
-}
-
-/// `GET /kestrel/sessions/:id`
-pub async fn get_session<B: Backend, S: SessionStore>(
-    State(state): State<Arc<AppState<B, S>>>,
-    Path(id): Path<String>,
-) -> Result<Json<kestrel_core::session::SessionMetadata>, ServerError> {
-    let session_id = validate_and_create_session_id(&id)?;
-
-    match state.manager.get_metadata(&session_id).await? {
-        Some(meta) => Ok(Json(meta)),
-        None => Err(ServerError::NotFound {
-            resource: "Session".to_string(),
-            id,
-        }),
-    }
-}
-
-/// `DELETE /kestrel/sessions/:id`
-pub async fn delete_session<B: Backend, S: SessionStore>(
-    State(state): State<Arc<AppState<B, S>>>,
-    Path(id): Path<String>,
-) -> Result<Json<DeleteSessionResponse>, ServerError> {
-    let session_id = validate_and_create_session_id(&id)?;
-
-    let deleted = state.manager.delete_session(&session_id).await?;
-    if deleted {
-        info!(session = %id, "Deleted session");
-        Ok(Json(DeleteSessionResponse { id, deleted: true }))
-    } else {
-        Err(ServerError::NotFound {
-            resource: "Session".to_string(),
-            id,
-        })
-    }
-}
+// Re-export session endpoints from session_handlers module.
+pub use crate::session_handlers::{delete_session, get_session, list_sessions};

@@ -57,15 +57,10 @@ async fn test_chat_completions_non_streaming_and_prefix_reuse() {
 
     let payload1 = ChatCompletionRequest {
         model: "mock-qwen".to_string(),
-        messages: vec![ChatMessage {
-            role: "user".to_string(),
-            content: "What is your name?".to_string(),
-        }],
+        messages: vec![ChatMessage::user("What is your name?")],
         max_tokens: Some(64),
         stream: Some(false),
-        temperature: None,
-        user: None,
-        session_id: None,
+        ..Default::default()
     };
 
     let req1 = Request::builder()
@@ -89,24 +84,13 @@ async fn test_chat_completions_non_streaming_and_prefix_reuse() {
     let payload2 = ChatCompletionRequest {
         model: "mock-qwen".to_string(),
         messages: vec![
-            ChatMessage {
-                role: "user".to_string(),
-                content: "What is your name?".to_string(),
-            },
-            ChatMessage {
-                role: "assistant".to_string(),
-                content: "I am a test assistant.".to_string(),
-            },
-            ChatMessage {
-                role: "user".to_string(),
-                content: "Tell me more.".to_string(),
-            },
+            ChatMessage::user("What is your name?"),
+            ChatMessage::assistant("I am a test assistant."),
+            ChatMessage::user("Tell me more."),
         ],
         max_tokens: Some(64),
         stream: Some(false),
-        temperature: None,
-        user: None,
-        session_id: None,
+        ..Default::default()
     };
 
     let req2 = Request::builder()
@@ -138,15 +122,11 @@ async fn test_chat_completions_streaming_sse() {
 
     let payload = ChatCompletionRequest {
         model: "mock-qwen".to_string(),
-        messages: vec![ChatMessage {
-            role: "user".to_string(),
-            content: "Stream this response".to_string(),
-        }],
+        messages: vec![ChatMessage::user("Stream this response")],
         max_tokens: Some(64),
         stream: Some(true),
-        temperature: None,
-        user: None,
         session_id: Some("stream-session-1".to_string()),
+        ..Default::default()
     };
 
     let req = Request::builder()
@@ -204,11 +184,7 @@ async fn test_chat_completions_error_handling() {
     let empty_payload = ChatCompletionRequest {
         model: "mock-qwen".to_string(),
         messages: vec![],
-        max_tokens: None,
-        stream: None,
-        temperature: None,
-        user: None,
-        session_id: None,
+        ..Default::default()
     };
 
     let req1 = Request::builder()
@@ -229,15 +205,8 @@ async fn test_chat_completions_error_handling() {
     // 2. Malicious session ID with path traversal
     let valid_payload = ChatCompletionRequest {
         model: "mock-qwen".to_string(),
-        messages: vec![ChatMessage {
-            role: "user".to_string(),
-            content: "Hello".to_string(),
-        }],
-        max_tokens: None,
-        stream: None,
-        temperature: None,
-        user: None,
-        session_id: None,
+        messages: vec![ChatMessage::user("Hello")],
+        ..Default::default()
     };
 
     let req2 = Request::builder()
@@ -263,15 +232,11 @@ async fn test_kestrel_sessions_endpoints_crud() {
     // 1. Populate a session via completion
     let payload = ChatCompletionRequest {
         model: "mock-qwen".to_string(),
-        messages: vec![ChatMessage {
-            role: "user".to_string(),
-            content: "Initiate session".to_string(),
-        }],
+        messages: vec![ChatMessage::user("Initiate session")],
         max_tokens: Some(32),
         stream: Some(false),
-        temperature: None,
-        user: None,
         session_id: Some("crud-session-1".to_string()),
+        ..Default::default()
     };
 
     let init_req = Request::builder()

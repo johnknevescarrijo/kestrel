@@ -63,6 +63,10 @@ pub enum ServerError {
     /// Error originating from the core engine.
     #[error("core engine error: {0}")]
     Core(#[from] kestrel_core::Error),
+
+    /// Error originating from tool calling parsing, validation, or retries.
+    #[error("tool calling error: {0}")]
+    Tool(#[from] kestrel_tools::ToolError),
 }
 
 impl IntoResponse for ServerError {
@@ -79,6 +83,12 @@ impl IntoResponse for ServerError {
                 "not_found_error",
                 "not_found",
                 format!("{resource} '{id}' not found"),
+            ),
+            ServerError::Tool(err) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "tool_call_validation_error",
+                "invalid_tool_call",
+                err.to_string(),
             ),
             ServerError::Core(kestrel_core::Error::InvalidSessionId { id, reason }) => (
                 StatusCode::BAD_REQUEST,
