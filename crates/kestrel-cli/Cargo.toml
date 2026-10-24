@@ -1,0 +1,30 @@
+[package]
+name = "kestrel-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "kestrel"
+path = "src/main.rs"
+
+[[test]]
+name = "mock_integration"
+path = "../../tests/mock_integration.rs"
+
+[[test]]
+name = "e2e"
+path = "../../tests/e2e.rs"
+
+[dependencies]
+kestrel-core = { workspace = true }
+kestrel-llama = { workspace = true }
+kestrel-server = { workspace = true }
+kestrel-tools = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
