@@ -37,6 +37,13 @@ pub enum LlamaError {
         reason: String,
     },
 
+    /// Failed to tokenize text into token IDs.
+    #[error("failed to tokenize text: {reason}. Verify input format.")]
+    Tokenization {
+        /// Underlying error description.
+        reason: String,
+    },
+
     /// Blocking task execution panicked or was cancelled.
     #[error("tokio blocking task failed: {reason}.")]
     TaskJoin {
