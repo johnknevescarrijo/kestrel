@@ -280,6 +280,30 @@ pub struct DeleteSessionResponse {
     pub deleted: bool,
 }
 
+/// Validates that a session ID string only contains permitted characters.
+pub fn validate_and_create_session_id(
+    id: &str,
+) -> Result<kestrel_core::session::SessionId, crate::error::ServerError> {
+    if id.is_empty() {
+        return Err(crate::error::ServerError::BadRequest {
+            reason: "session ID cannot be empty".to_string(),
+        });
+    }
+
+    let is_valid = id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if !is_valid || id.contains("..") {
+        return Err(crate::error::ServerError::BadRequest {
+            reason: format!(
+                "invalid session id '{id}': must only contain alphanumeric characters, '-', and '_'"
+            ),
+        });
+    }
+
+    Ok(kestrel_core::session::SessionId::new(id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

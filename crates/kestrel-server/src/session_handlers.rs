@@ -40,7 +40,8 @@ pub async fn list_sessions<B: Backend, S: SessionStore>(
 pub async fn get_metrics<B: Backend, S: SessionStore>(
     State(state): State<Arc<AppState<B, S>>>,
 ) -> Json<kestrel_core::TierMetricsSnapshot> {
-    let snapshot = state.manager.metrics_snapshot().await;
+    let mut snapshot = state.manager.metrics_snapshot().await;
+    snapshot.batch_metrics = Some(state.scheduler.metrics_snapshot());
     Json(snapshot)
 }
 

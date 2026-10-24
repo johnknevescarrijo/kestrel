@@ -20,23 +20,43 @@ use crate::types::{
     ModelListResponse, ModelObject, Usage,
 };
 
-/// Shared application state containing session manager and model metadata.
-pub struct AppState<B: Backend, S: SessionStore> {
+/// Shared application state containing session manager, scheduler, and model metadata.
+pub struct AppState<B: Backend + 'static, S: SessionStore + 'static> {
     /// Active session manager.
     pub manager: Arc<kestrel_core::manager::SessionManager<B, S>>,
+    /// Continuous batching scheduler.
+    pub scheduler: Arc<kestrel_core::scheduler::BatchScheduler<B, S>>,
     /// Configured model name.
     pub model_id: String,
     session_counter: AtomicU64,
 }
 
-impl<B: Backend, S: SessionStore> AppState<B, S> {
-    /// Creates a new `AppState`.
+impl<B: Backend + 'static, S: SessionStore + 'static> AppState<B, S> {
+    /// Creates a new `AppState` with default batch configuration.
     pub fn new(
         manager: Arc<kestrel_core::manager::SessionManager<B, S>>,
         model_id: impl Into<String>,
     ) -> Self {
+        Self::with_batch_config(
+            manager,
+            model_id,
+            kestrel_core::scheduler::BatchConfig::default(),
+        )
+    }
+
+    /// Creates a new `AppState` configured with an explicit dynamic batching configuration.
+    pub fn with_batch_config(
+        manager: Arc<kestrel_core::manager::SessionManager<B, S>>,
+        model_id: impl Into<String>,
+        config: kestrel_core::scheduler::BatchConfig,
+    ) -> Self {
+        let scheduler = Arc::new(kestrel_core::scheduler::BatchScheduler::new(
+            Arc::clone(&manager),
+            config,
+        ));
         Self {
             manager,
+            scheduler,
             model_id: model_id.into(),
             session_counter: AtomicU64::new(1),
         }
@@ -72,27 +92,7 @@ pub async fn list_models<B: Backend, S: SessionStore>(
     }))
 }
 
-/// Validates that a session ID string only contains permitted characters.
-pub(crate) fn validate_and_create_session_id(id: &str) -> Result<SessionId, ServerError> {
-    if id.is_empty() {
-        return Err(ServerError::BadRequest {
-            reason: "session ID cannot be empty".to_string(),
-        });
-    }
-
-    let is_valid = id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-    if !is_valid || id.contains("..") {
-        return Err(ServerError::BadRequest {
-            reason: format!(
-                "invalid session id '{id}': must only contain alphanumeric characters, '-', and '_'"
-            ),
-        });
-    }
-
-    Ok(SessionId::new(id))
-}
+pub use crate::types::validate_and_create_session_id;
 
 /// Resolves session identifier from headers, request body, or auto-generation.
 fn resolve_session_id<B: Backend, S: SessionStore>(
@@ -275,33 +275,11 @@ pub async fn chat_completions<B: Backend + 'static, S: SessionStore + 'static>(
 
         if is_none_tool_choice {
             let result = state
-                .manager
-                .complete(&session_id, &prompt, &options)
+                .scheduler
+                .submit(session_id, prompt, options)
                 .await?;
-
             let created = current_timestamp();
-            let response = ChatCompletionResponse {
-                id: format!("chatcmpl-{created}"),
-                object: "chat.completion".to_string(),
-                created,
-                model,
-                choices: vec![ChatChoice {
-                    index: 0,
-                    message: crate::types::ChatMessage {
-                        role: "assistant".to_string(),
-                        content: result.text,
-                        tool_calls: None,
-                    },
-                    finish_reason: Some("stop".to_string()),
-                }],
-                usage: Usage {
-                    prompt_tokens: result.prefill_tokens,
-                    completion_tokens: result.generated_tokens,
-                    total_tokens: result.prefill_tokens + result.generated_tokens,
-                },
-            };
-
-            return Ok(Json(response).into_response());
+            return Ok(Json(make_chat_response(created, model, &result)).into_response());
         }
 
         let require_tool = match req.tool_choice.as_ref() {
@@ -367,33 +345,39 @@ pub async fn chat_completions<B: Backend + 'static, S: SessionStore + 'static>(
         Ok(Json(response).into_response())
     } else {
         let result = state
-            .manager
-            .complete(&session_id, &prompt, &options)
+            .scheduler
+            .submit(session_id, prompt, options)
             .await?;
 
         let created = current_timestamp();
-        let response = ChatCompletionResponse {
-            id: format!("chatcmpl-{created}"),
-            object: "chat.completion".to_string(),
-            created,
-            model,
-            choices: vec![ChatChoice {
-                index: 0,
-                message: crate::types::ChatMessage {
-                    role: "assistant".to_string(),
-                    content: result.text,
-                    tool_calls: None,
-                },
-                finish_reason: Some("stop".to_string()),
-            }],
-            usage: Usage {
-                prompt_tokens: result.prefill_tokens,
-                completion_tokens: result.generated_tokens,
-                total_tokens: result.prefill_tokens + result.generated_tokens,
-            },
-        };
+        Ok(Json(make_chat_response(created, model, &result)).into_response())
+    }
+}
 
-        Ok(Json(response).into_response())
+fn make_chat_response(
+    created: u64,
+    model: String,
+    result: &kestrel_core::traits::CompletionResult,
+) -> ChatCompletionResponse {
+    ChatCompletionResponse {
+        id: format!("chatcmpl-{created}"),
+        object: "chat.completion".to_string(),
+        created,
+        model,
+        choices: vec![ChatChoice {
+            index: 0,
+            message: crate::types::ChatMessage {
+                role: "assistant".to_string(),
+                content: result.text.clone(),
+                tool_calls: None,
+            },
+            finish_reason: Some("stop".to_string()),
+        }],
+        usage: Usage {
+            prompt_tokens: result.prefill_tokens,
+            completion_tokens: result.generated_tokens,
+            total_tokens: result.prefill_tokens + result.generated_tokens,
+        },
     }
 }
 

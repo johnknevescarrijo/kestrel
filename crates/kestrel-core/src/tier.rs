@@ -131,6 +131,9 @@ pub struct TierMetricsSnapshot {
     pub hot_budget_bytes: usize,
     /// Configured maximum byte budget for warm tier.
     pub warm_budget_bytes: usize,
+    /// Continuous batching scheduler metrics, if active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_metrics: Option<crate::scheduler::BatchMetricsSnapshot>,
 }
 
 /// Thread-safe atomic counters tracking tiering events and transitions.
@@ -250,6 +253,7 @@ impl TierMetricsCounters {
             warm_used_bytes,
             hot_budget_bytes: policy.hot_budget_bytes,
             warm_budget_bytes: policy.warm_budget_bytes,
+            batch_metrics: None,
         }
     }
 }
