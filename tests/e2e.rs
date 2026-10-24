@@ -14,6 +14,8 @@ use kestrel_core::store::FileSessionStore;
 use kestrel_core::traits::{Backend, CompletionOptions, SessionStore};
 use kestrel_core::SessionManager;
 use kestrel_llama::LlamaBackend;
+use kestrel_tools::{format_tools_prompt, ToolDefinition, ToolError, ToolRuntime};
+use serde_json::json;
 use tempfile::tempdir;
 
 fn resolve_model_path() -> PathBuf {
@@ -133,4 +135,77 @@ async fn test_qwen_e2e_session_prefill_reduction() {
         "E2E session kv_state must not be empty after inference"
     );
     assert_eq!(snapshot.kv_state.len(), snapshot.tokens.len() * 4);
+}
+
+#[tokio::test]
+#[ignore = "requires downloaded model weights at ./models/qwen2.5-0.5b-q4.gguf"]
+async fn test_qwen_e2e_tool_calling() {
+    let model_path = resolve_model_path();
+    let backend = LlamaBackend::load_from_file(&model_path).unwrap_or_else(|err| {
+        panic!(
+            "Failed to load Qwen2.5-0.5B model from {}: {err}",
+            model_path.display()
+        )
+    });
+
+    let dir = tempdir().expect("failed to create temp dir");
+    let store = Arc::new(FileSessionStore::new(dir.path()).expect("failed to init store"));
+    let manager = SessionManager::new(Arc::new(backend), store.clone(), 4, "qwen2.5-0.5b");
+
+    let tool = ToolDefinition::new_function(
+        "get_weather",
+        Some("Get current weather for a specified city".to_string()),
+        json!({
+            "type": "object",
+            "properties": {
+                "city": { "type": "string", "description": "The city name, e.g. Tokyo" }
+            },
+            "required": ["city"]
+        }),
+    );
+
+    let tools = vec![tool];
+    let tools_prompt = format_tools_prompt(&tools);
+    let prompt = format!(
+        "<|im_start|>system\n{tools_prompt}\nUse the tool to answer user requests.<|im_end|>\n<|im_start|>user\nWhat is the weather in Tokyo? Call get_weather tool.<|im_end|>\n<|im_start|>assistant\n"
+    );
+
+    let session_id = SessionId::from("e2e-tool-calling-sess");
+    let options = CompletionOptions { max_tokens: 32 };
+
+    // 1. Direct session completion to verify raw inference
+    let raw_res = manager
+        .complete(&session_id, &prompt, &options)
+        .await
+        .expect("Raw completion should succeed");
+
+    println!("\n=== Raw E2E Model Output ===");
+    println!("{}", raw_res.text);
+
+    let parsed = kestrel_tools::parse_model_output(&raw_res.text);
+    println!("Parsed result: {:?}", parsed);
+
+    // 2. Validate ToolRuntime execution with real model
+    let runtime = ToolRuntime::new(1);
+    let session_id_2 = SessionId::from("e2e-tool-calling-runtime-sess");
+    let result = runtime
+        .complete_with_tools(&manager, &session_id_2, &prompt, &options, &tools, false)
+        .await;
+
+    match result {
+        Ok((output, res)) => {
+            println!("ToolRuntime succeeded: {:?}", output);
+            assert!(res.generated_tokens > 0);
+        }
+        Err(ToolError::MaxRetriesExceeded {
+            attempts,
+            last_error,
+        }) => {
+            println!(
+                "ToolRuntime executed retries (attempts: {attempts}) and signaled structured error: {last_error}"
+            );
+            assert_eq!(attempts, 2);
+        }
+        Err(other) => panic!("Unexpected error from ToolRuntime: {other:?}"),
+    }
 }

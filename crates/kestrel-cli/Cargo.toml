@@ -30,6 +30,10 @@ path = "../../tests/server_integration.rs"
 name = "openai_contract"
 path = "../../tests/openai_contract.rs"
 
+[[test]]
+name = "tool_calling_suite"
+path = "../../tests/tool_calling_suite.rs"
+
 [dependencies]
 kestrel-core = { workspace = true }
 kestrel-llama = { workspace = true }
@@ -47,5 +51,6 @@ tempfile = { workspace = true }
 tower = { workspace = true }
 http-body-util = { workspace = true }
 serde_json = { workspace = true }
+async-trait = { workspace = true }
 
 
