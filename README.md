@@ -1,6 +1,6 @@
 # 🦅 kestrel
 
-> **Motor de inferência local *agent-native* para hardware de consumidor (8–24 GB de VRAM).**
+> **Agent-native local inference engine for consumer hardware (8–24 GB VRAM).**
 
 [![Rust](https://img.shields.io/badge/Rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
 [![Backend](https://img.shields.io/badge/llama.cpp-GGUF-blue.svg)](https://github.com/ggerganov/llama.cpp)
@@ -9,59 +9,59 @@
 
 ---
 
-## 📌 Visão Geral & Proposta de Valor
+## 📌 Overview & Value Proposition
 
-Enquanto servidores de inferência tradicionais (como vLLM ou llama.cpp puro) tratam cada requisição como efêmera, o **kestrel** foi projetado desde o primeiro dia para fluxos de trabalho com **agentes autônomos**. Em interações agênticas, um agente realiza dezenas de turnos incrementais (executando comandos, lendo arquivos e raciocinando). Recomputar o contexto inteiro a cada turno gera latência e desperdício massivo de computação.
+While traditional inference servers (such as vLLM or plain llama.cpp) treat each request as ephemeral, **kestrel** is designed from day one for **autonomous agent** workflows. In agentic interactions, an agent performs dozens of incremental turns (executing commands, reading files, reasoning). Recomputing the entire context on every turn introduces latency and massive computational waste.
 
-O **kestrel** inverte essa lógica: **Sessão > Requisição**.
+**kestrel** flips this paradigm: **Session > Request**.
 
-- 🧠 **Sessão Persistente & Reuso de Prefixo:** O estado do KV cache é indexado por um `SessionId`. Chamadas subsequentes na mesma sessão processam apenas os novos tokens (*prefill* delta), reduzindo a latência de primeiro token a zero ou próximo disso.
-- ⚡ **Tiering de KV Cache em 3 Níveis:**
-  - **Hot (VRAM):** Sessões ativas mantêm o handle do backend na GPU para latência imediata.
-  - **Warm (RAM):** Sessões ociosas têm seu snapshot mantido na memória do sistema, liberando a VRAM para sessões ativas.
-  - **Cold (Disco via `bincode`):** Sessões inativas há mais tempo são descarregadas atomicamente para o disco local, restauráveis a qualquer momento.
-  - Governança automática por limites de memória configuráveis (`KESTREL_HOT_BUDGET_MB`, `KESTREL_WARM_BUDGET_MB`) e algoritmo LRU.
-- 🛠️ **Tool Calling Estruturado & Resiliente:** Parser flexível capaz de extrair chamadas a partir de tags `<tool_call>`, blocos markdown de código ou JSON cru. Validação estrita via JSON Schema (`jsonschema`) com **loop automático de feedback e retry**: se o modelo errar argumentos ou alucinar o schema, o Kestrel realimenta o erro reflexivamente de volta ao modelo.
-- 🚀 **Continuous Batching:** O `BatchScheduler` agrupa requisições concorrentes entre diferentes sessões hot em janelas de micro-lotes, maximizando a taxa de transferência da GPU sem aumentar a latência individual.
-- 🔌 **Compatibilidade OpenAI Pronta para Uso:** Endpoints `/v1/chat/completions` (JSON completo e SSE streaming) e `/v1/models`, integrando perfeitamente com Open WebUI, Cursor, Continue, LangChain ou o SDK oficial da OpenAI.
-- 📊 **Observabilidade Nativa:** Spans estruturados com `tracing`, logs contextualizados e métricas operacionais completas via `/kestrel/metrics` (taxas de hit dos tiers, promoções, demissões e batching).
+- 🧠 **Persistent Sessions & Prefix Reuse:** KV cache state is indexed by a `SessionId`. Subsequent calls within the same session process only the new tokens (delta prefill), dropping time-to-first-token (TTFT) to near zero.
+- ⚡ **3-Tier KV Cache Management:**
+  - **Hot (VRAM):** Active sessions keep their backend handles on GPU for zero-latency execution.
+  - **Warm (RAM):** Idle sessions keep snapshots in host system memory, freeing VRAM for active sessions.
+  - **Cold (Disk via `bincode`):** Sessions inactive for longer periods are demoted atomically to local disk, restorable at any time.
+  - Automatic governance driven by configurable memory limits (`KESTREL_HOT_BUDGET_MB`, `KESTREL_WARM_BUDGET_MB`) and an LRU eviction policy.
+- 🛠️ **Structured & Resilient Tool Calling:** Flexible parser capable of extracting calls from `<tool_call>` tags, markdown code blocks, or raw JSON. Strict validation using JSON Schema (`jsonschema`) with an **automatic feedback & retry loop**: if the model provides invalid arguments or violates the schema, Kestrel feeds the error back into the model for self-correction.
+- 🚀 **Continuous Batching:** The `BatchScheduler` groups concurrent requests across hot sessions into micro-batch windows, maximizing GPU throughput without degrading single-request latency.
+- 🔌 **Drop-in OpenAI Compatibility:** `/v1/chat/completions` (JSON and SSE streaming) and `/v1/models` endpoints, integrating seamlessly with Open WebUI, Cursor, Continue, LangChain, or the official OpenAI SDK.
+- 📊 **Native Observability:** Structured spans powered by `tracing`, contextual logs, and full operational metrics exposed at `/kestrel/metrics` (tier hit rates, promotions, demotions, and batching stats).
 
 ---
 
-## 🧱 Arquitetura do Workspace
+## 🧱 Workspace Architecture
 
-O projeto é organizado como um workspace Cargo modular, com limites claros de responsabilidade e `#![deny(unsafe_code)]` em todos os módulos puros:
+The project is structured as a modular Cargo workspace with clear boundaries of responsibility and `#![deny(unsafe_code)]` across all pure modules:
 
 ```
 kestrel/
 ├── Cargo.toml                # Workspace manifest (Rust 2021, rust-version 1.80)
 ├── crates/
-│   ├── kestrel-core/         # Lógica pura: sessões, LRU, tiering, BatchScheduler e traits
-│   ├── kestrel-llama/        # Bindings isolados para llama.cpp (GGUF, restauração de KV)
-│   ├── kestrel-tools/        # Parsing de tool calls, validação JSON Schema e loop de retry
-│   ├── kestrel-server/       # Servidor HTTP Axum, compatibilidade OpenAI e rotas /kestrel/*
-│   └── kestrel-cli/          # Binário principal: comandos 'serve' e 'complete'
-├── scripts/                  # Scripts auxiliares (ex: download de modelos)
-├── tests/                    # Suíte de testes de integração, stress e E2E
-├── benches/                  # Benchmarks Criterion (reuso de KV cache)
-└── models/                   # Diretório local para modelos GGUF (.gitignore)
+│   ├── kestrel-core/         # Pure logic: sessions, LRU, tiering, BatchScheduler, and traits
+│   ├── kestrel-llama/        # Isolated llama.cpp bindings (GGUF, KV cache restore)
+│   ├── kestrel-tools/        # Tool call parsing, JSON Schema validation, and retry loop
+│   ├── kestrel-server/       # Axum HTTP server, OpenAI compatibility, and /kestrel/* routes
+│   └── kestrel-cli/          # Main binary: 'serve' and 'complete' CLI commands
+├── scripts/                  # Helper scripts (e.g., test model download)
+├── tests/                    # Integration, stress, and E2E test suite
+├── benches/                  # Criterion benchmarks (KV cache reuse)
+└── models/                   # Local directory for GGUF models (.gitignore)
 ```
 
-| Crate | Responsabilidade Principal |
+| Crate | Primary Responsibility |
 |---|---|
-| **`kestrel-core`** | Gerenciador de ciclo de vida (`SessionManager`), políticas de tiering (`TierPolicy`), cálculo de orçamentos de memória, persistência em disco (`FileSessionStore`), fila e escalonador contínuo (`BatchScheduler`). |
-| **`kestrel-llama`** | Integração direta com a biblioteca `llama_cpp`. Isola chamadas de baixo nível, gerencia handles de contexto e executa forward passes com restauração parcial de tokens. |
-| **`kestrel-tools`** | Extração de invocação de ferramentas, compilação de esquemas JSON (`jsonschema`), validação de argumentos e injeção de feedback corretivo multi-tentativas. |
-| **`kestrel-server`** | Camada HTTP construída com Axum. Oferece endpoints compatíveis com a OpenAI, suporte a Server-Sent Events (SSE) para streaming, resolução automática de `SessionId` e endpoints de métricas e sessões. |
-| **`kestrel-cli`** | Ponto de entrada CLI (via `clap`). Permite tanto inferência interativa/direta quanto o lançamento do servidor de produção. |
+| **`kestrel-core`** | Lifecycle management (`SessionManager`), tiering policies (`TierPolicy`), memory budget calculations, disk persistence (`FileSessionStore`), queueing and continuous scheduling (`BatchScheduler`). |
+| **`kestrel-llama`** | Direct integration with `llama_cpp`. Isolates low-level calls, manages context handles, and executes forward passes with token prefix restoration. |
+| **`kestrel-tools`** | Tool invocation extraction, JSON Schema compilation (`jsonschema`), argument validation, and multi-turn corrective feedback injection. |
+| **`kestrel-server`** | Axum-based HTTP layer. Provides OpenAI-compatible endpoints, Server-Sent Events (SSE) streaming support, automatic `SessionId` resolution, and session/metrics administration endpoints. |
+| **`kestrel-cli`** | CLI entry point (via `clap`). Supports both interactive/direct CLI completions and launching the production HTTP server. |
 
 ---
 
 ## 🚀 Quickstart
 
-### 1. Pré-requisitos
-- **Rust:** Versão 1.80 ou superior (`rustup default stable`).
-- **Ferramentas de compilação:** `cmake` (>= 3.14) e um compilador C/C++ compatível (GCC, Clang ou MSVC) para compilar o `llama.cpp`.
+### 1. Prerequisites
+- **Rust:** Version 1.80 or higher (`rustup default stable`).
+- **Build tools:** `cmake` (>= 3.14) and a compatible C/C++ compiler (GCC, Clang, or MSVC) to compile `llama.cpp`.
 
 ```bash
 # Ubuntu/Debian
@@ -71,42 +71,42 @@ sudo apt update && sudo apt install -y build-essential cmake
 sudo dnf install -y gcc-c++ cmake
 ```
 
-### 2. Baixar o Modelo de Teste
-Disponibilizamos um script que faz o download do **Qwen2.5-0.5B-Instruct (Q4_K_M GGUF)** (~398 MB), ideal para desenvolvimento local e testes:
+### 2. Download the Test Model
+We provide a helper script to download **Qwen2.5-0.5B-Instruct (Q4_K_M GGUF)** (~398 MB), ideal for local development and testing:
 
 ```bash
 ./scripts/fetch-test-model.sh
 ```
-O modelo será salvo em `./models/qwen2.5-0.5b-q4.gguf`.
+The model will be saved to `./models/qwen2.5-0.5b-q4.gguf`.
 
-### 3. Compilar o Projeto
+### 3. Build the Project
 
 ```bash
-# Compilar binário release
+# Build release binary
 cargo build --release -p kestrel-cli
 
-# O executável estará disponível em target/release/kestrel
+# The executable will be available at target/release/kestrel
 ```
 
 ---
 
-## 💻 Uso via Linha de Comando (CLI)
+## 💻 Command Line Usage (CLI)
 
-O binário `kestrel` oferece dois subcomandos principais: `complete` e `serve`.
+The `kestrel` binary provides two main subcommands: `complete` and `serve`.
 
-### Inferência Direta (`complete`)
+### Direct Completion (`complete`)
 
 ```bash
-# Inferência pontual sem sessão
-./target/release/kestrel complete "Explique em uma frase o que é Rust."
+# One-shot completion without session
+./target/release/kestrel complete "Explain in one sentence what Rust is."
 
-# Inferência com sessão persistente (KV cache preservado entre execuções!)
-./target/release/kestrel complete "Meu nome é João e eu gosto de café." --session session-user-1
-./target/release/kestrel complete "Qual é o meu nome e o que eu gosto?" --session session-user-1
+# Completion with persistent session (KV cache preserved across runs!)
+./target/release/kestrel complete "My name is Alice and I like coffee." --session session-user-1
+./target/release/kestrel complete "What is my name and what do I like?" --session session-user-1
 ```
-> **Nota:** Na segunda chamada com o mesmo `--session`, o Kestrel reaproveita o KV cache já processado, executando prefill apenas na nova pergunta.
+> **Note:** On the second invocation with the same `--session`, Kestrel reuses the already processed KV cache, running prefill only on the newly added question.
 
-### Subindo o Servidor HTTP (`serve`)
+### Starting the HTTP Server (`serve`)
 
 ```bash
 ./target/release/kestrel serve \
@@ -120,13 +120,13 @@ O binário `kestrel` oferece dois subcomandos principais: `complete` e `serve`.
 
 ---
 
-## 🌐 Exemplos de Uso da API HTTP
+## 🌐 HTTP API Usage Examples
 
-O Kestrel inicia na porta padrão `8080` com suporte integral aos headers e esquemas da OpenAI.
+Kestrel starts on default port `8080` with full support for OpenAI request/response schemas and headers.
 
-### 1. Chamada Padrão (JSON) via `curl`
+### 1. Standard Completion (JSON) via `curl`
 
-Identifique a sessão passando o header `X-Kestrel-Session-Id` (ou pelo campo `user` no corpo da requisição):
+Specify the session using the `X-Kestrel-Session-Id` header (or via the `user` field in the request body):
 
 ```bash
 curl -s http://localhost:8080/v1/chat/completions \
@@ -135,13 +135,13 @@ curl -s http://localhost:8080/v1/chat/completions \
   -d '{
     "model": "qwen2.5-0.5b-q4.gguf",
     "messages": [
-      {"role": "user", "content": "Olá! Estou configurando um servidor de inferência local."}
+      {"role": "user", "content": "Hello! I am setting up a local inference server."}
     ],
     "max_tokens": 128
   }'
 ```
 
-**Resposta:**
+**Response:**
 ```json
 {
   "id": "chatcmpl-1729792000",
@@ -153,7 +153,7 @@ curl -s http://localhost:8080/v1/chat/completions \
       "index": 0,
       "message": {
         "role": "assistant",
-        "content": "Olá! Muito bom ver você explorando inferência local. Como posso ajudar com a sua configuração?",
+        "content": "Hello! Great to see you exploring local inference. How can I help with your setup?",
         "tool_calls": null
       },
       "finish_reason": "stop"
@@ -167,9 +167,9 @@ curl -s http://localhost:8080/v1/chat/completions \
 }
 ```
 
-### 2. Streaming em Tempo Real (SSE)
+### 2. Real-Time Streaming (SSE)
 
-Basta definir `"stream": true`:
+Set `"stream": true`:
 
 ```bash
 curl -N http://localhost:8080/v1/chat/completions \
@@ -178,13 +178,13 @@ curl -N http://localhost:8080/v1/chat/completions \
   -d '{
     "model": "qwen2.5-0.5b-q4.gguf",
     "messages": [
-      {"role": "user", "content": "Conte até 5 devagar."}
+      {"role": "user", "content": "Count to 5 slowly."}
     ],
     "stream": true
   }'
 ```
 
-O servidor emitirá eventos padrão SSE:
+The server emits standard SSE events:
 ```
 data: {"id":"chatcmpl-1729792010","object":"chat.completion.chunk","created":1729792010,"model":"qwen2.5-0.5b-q4.gguf","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
 
@@ -194,49 +194,49 @@ data: {"id":"chatcmpl-1729792010","object":"chat.completion.chunk","created":172
 data: [DONE]
 ```
 
-### 3. Integração com SDK Oficial da OpenAI (Python)
+### 3. Integration with Official OpenAI Python SDK
 
-Você pode usar o SDK padrão da OpenAI sem nenhuma alteração no código do cliente, além de apontar a URL base:
+You can use the official `openai` Python SDK without any changes to client code other than setting the base URL:
 
 ```python
 from openai import OpenAI
 
-# Inicializa apontando para o servidor Kestrel local
+# Initialize pointing to local Kestrel server
 client = OpenAI(
     base_url="http://localhost:8080/v1",
-    api_key="none",  # Kestrel é single-user local por padrão
+    api_key="none",  # Kestrel is single-user local by default
 )
 
-# Envia requisição informando a sessão persistente
+# Send request specifying persistent session
 response = client.chat.completions.create(
     model="qwen2.5-0.5b-q4.gguf",
     messages=[
-        {"role": "system", "content": "Você é um assistente conciso."},
-        {"role": "user", "content": "Qual a capital da França?"},
+        {"role": "system", "content": "You are a concise assistant."},
+        {"role": "user", "content": "What is the capital of France?"},
     ],
-    extra_headers={"X-Kestrel-Session-Id": "sessao-pesquisa-01"},
+    extra_headers={"X-Kestrel-Session-Id": "research-sess-01"},
 )
 
 print(response.choices[0].message.content)
 
-# Segundo turno reutiliza a mesma sessão e aproveita o KV cache:
+# Second turn reuses the same session and benefits from KV cache reuse:
 response2 = client.chat.completions.create(
     model="qwen2.5-0.5b-q4.gguf",
     messages=[
-        {"role": "system", "content": "Você é um assistente conciso."},
-        {"role": "user", "content": "Qual a capital da França?"},
+        {"role": "system", "content": "You are a concise assistant."},
+        {"role": "user", "content": "What is the capital of France?"},
         {"role": "assistant", "content": response.choices[0].message.content},
-        {"role": "user", "content": "Qual a população estimada dela?"},
+        {"role": "user", "content": "What is its estimated population?"},
     ],
-    extra_headers={"X-Kestrel-Session-Id": "sessao-pesquisa-01"},
+    extra_headers={"X-Kestrel-Session-Id": "research-sess-01"},
 )
 
 print(response2.choices[0].message.content)
 ```
 
-### 4. Tool Calling Confiável com JSON Schema
+### 4. Reliable Tool Calling with JSON Schema
 
-O Kestrel analisa esquemas JSON declarados em `tools` e força a validação sintática e semântica antes de responder ao cliente:
+Kestrel parses JSON schemas declared in `tools` and validates syntax and constraints before responding to the client:
 
 ```bash
 curl -s http://localhost:8080/v1/chat/completions \
@@ -245,14 +245,14 @@ curl -s http://localhost:8080/v1/chat/completions \
   -d '{
     "model": "qwen2.5-0.5b-q4.gguf",
     "messages": [
-      {"role": "user", "content": "Como está o clima em Curitiba?"}
+      {"role": "user", "content": "What is the weather like in Curitiba?"}
     ],
     "tools": [
       {
         "type": "function",
         "function": {
           "name": "get_weather",
-          "description": "Obtém as condições climáticas atuais de uma cidade",
+          "description": "Get current weather conditions for a city",
           "parameters": {
             "type": "object",
             "properties": {
@@ -267,7 +267,7 @@ curl -s http://localhost:8080/v1/chat/completions \
   }'
 ```
 
-Se o modelo gerar a chamada corretamente, o Kestrel retorna `finish_reason: "tool_calls"`:
+When the model generates a valid tool invocation, Kestrel returns `finish_reason: "tool_calls"`:
 
 ```json
 {
@@ -299,19 +299,19 @@ Se o modelo gerar a chamada corretamente, o Kestrel retorna `finish_reason: "too
 }
 ```
 
-> 🔁 **Recuperação Automática (Self-Correction):** Caso o modelo emita parâmetros inválidos ou JSON malformado, o Kestrel detecta o erro contra o `jsonschema`, injeta um prompt de feedback explicando a violação e solicita ao modelo que reescreva a resposta (até o limite de retries configurado, padrão: 3).
+> 🔁 **Automatic Self-Correction (Retry Loop):** If the model outputs malformed JSON or parameters violating the schema, Kestrel captures the validation error against `jsonschema`, injects a corrective feedback prompt explaining the error, and prompts the model to regenerate the response (up to the configured retry limit, default: 3).
 
 ---
 
-## 🛠️ Endpoints de Administração & Observabilidade
+## 🛠️ Admin & Observability Endpoints
 
-Além da API padrão da OpenAI, o Kestrel expõe rotas exclusivas para controle agêntico:
+In addition to the standard OpenAI endpoints, Kestrel provides custom routes for agent session governance and observability:
 
 ### `GET /v1/models`
-Lista os modelos atualmente carregados no servidor.
+Lists models currently loaded on the server.
 
 ### `GET /kestrel/sessions`
-Lista todas as sessões ativas e em armazenamento, com métricas agregadas de uso de memória.
+Lists all active and stored sessions with aggregated memory metrics.
 
 ```bash
 curl -s http://localhost:8080/kestrel/sessions
@@ -342,17 +342,17 @@ curl -s http://localhost:8080/kestrel/sessions
 ```
 
 ### `GET /kestrel/sessions/:id`
-Exibe os metadados de uma sessão específica (tier atual, tamanho do KV cache, tokens armazenados).
+Displays metadata for a specific session (current tier, KV cache byte size, token count).
 
 ### `DELETE /kestrel/sessions/:id`
-Remove a sessão explicitamente da memória (VRAM/RAM) e apaga seu snapshot do disco.
+Explicitly evicts a session from memory (VRAM/RAM) and deletes its disk snapshot.
 
 ```bash
 curl -s -X DELETE http://localhost:8080/kestrel/sessions/ag-sess-001
 ```
 
 ### `GET /kestrel/metrics`
-Métricas operacionais em tempo real sobre o sistema de tiering e continuous batching:
+Real-time operational metrics for KV cache tiering and continuous batching:
 
 ```bash
 curl -s http://localhost:8080/kestrel/metrics
@@ -387,59 +387,59 @@ curl -s http://localhost:8080/kestrel/metrics
 
 ---
 
-## ⚙️ Configurações & Variáveis de Ambiente
+## ⚙️ Configuration & Environment Variables
 
-### Resolução de `SessionId`
-O Kestrel resolve a sessão da requisição na seguinte ordem de precedência:
-1. Header HTTP `X-Kestrel-Session-Id`
-2. Campo `session_id` no corpo da requisição JSON
-3. Campo `user` no corpo da requisição (padrão OpenAI)
-4. Geração automática (`auto-1`, `auto-2`, etc.) para requisições anônimas
+### `SessionId` Resolution
+Kestrel resolves the session identifier in the following precedence order:
+1. HTTP Header `X-Kestrel-Session-Id`
+2. `session_id` field in the JSON request body
+3. `user` field in the request body (OpenAI standard)
+4. Automatic generation (`auto-1`, `auto-2`, etc.) for anonymous requests
 
-### Variáveis de Ambiente
+### Environment Variables
 
-| Variável | Padrão | Descrição |
+| Variable | Default | Description |
 |---|---|---|
-| `KESTREL_HOT_BUDGET_MB` | `2048` (2 GiB) | Orçamento máximo de memória VRAM para sessões no tier **Hot**. |
-| `KESTREL_WARM_BUDGET_MB` | `4096` (4 GiB) | Orçamento máximo de memória RAM para sessões no tier **Warm**. |
-| `RUST_LOG` | `info` | Nível de filtragem do coletor de traces (`error`, `warn`, `info`, `debug`, `trace`). |
+| `KESTREL_HOT_BUDGET_MB` | `2048` (2 GiB) | Maximum VRAM memory budget for sessions in the **Hot** tier. |
+| `KESTREL_WARM_BUDGET_MB` | `4096` (4 GiB) | Maximum RAM memory budget for sessions in the **Warm** tier. |
+| `RUST_LOG` | `info` | Filter level for trace logging (`error`, `warn`, `info`, `debug`, `trace`). |
 
-### Opções de Linha de Comando (`kestrel serve`)
+### Command Line Options (`kestrel serve`)
 
 ```
-Opções:
-  -m, --model <PATH>             Caminho para o arquivo GGUF [default: ./models/qwen2.5-0.5b-q4.gguf]
-  -p, --port <PORT>              Porta TCP do servidor [default: 8080]
-      --host <HOST>              Endereço IP para bind [default: 0.0.0.0]
-      --session-dir <DIR>        Diretório para snapshots Cold [default: ./.kestrel/sessions]
-      --hot-capacity <N>         Número máximo de sessões residentes na VRAM [default: 16]
-      --hot-budget-mb <MB>       Sobrescreve o orçamento Hot em MB
-      --warm-budget-mb <MB>      Sobrescreve o orçamento Warm em MB
+Options:
+  -m, --model <PATH>             Path to GGUF file [default: ./models/qwen2.5-0.5b-q4.gguf]
+  -p, --port <PORT>              TCP port for the server [default: 8080]
+      --host <HOST>              Bind IP address [default: 0.0.0.0]
+      --session-dir <DIR>        Directory for Cold snapshots [default: ./.kestrel/sessions]
+      --hot-capacity <N>         Maximum number of concurrent sessions resident in VRAM [default: 16]
+      --hot-budget-mb <MB>       Override Hot memory budget in MB
+      --warm-budget-mb <MB>      Override Warm memory budget in MB
 ```
 
 ---
 
-## 🧪 Testes & Benchmarks
+## 🧪 Testing & Benchmarks
 
-O projeto possui uma suíte rigorosa cobrindo desde testes unitários isolados até concorrência sob carga pesada e testes fim-a-fim reais:
+The project includes a comprehensive test suite covering unit tests, heavy-load concurrency stress tests, and real end-to-end inference:
 
 ```bash
-# 1. Executar todos os testes unitários e de integração (com MockBackend)
+# 1. Run all unit and integration tests (using MockBackend)
 cargo test --workspace
 
-# 2. Executar testes E2E reais contra o modelo Qwen2.5-0.5B baixado
-# (Requer ./scripts/fetch-test-model.sh executado previamente)
+# 2. Run real E2E tests against downloaded Qwen2.5-0.5B model
+# (Requires ./scripts/fetch-test-model.sh executed beforehand)
 cargo test --test e2e -- --ignored
 
-# 3. Executar teste de estresse de concorrência (50 clientes simultâneos via BatchScheduler)
+# 3. Run concurrency stress test (50 concurrent clients via BatchScheduler)
 cargo test --test concurrency_stress -- --ignored
 
-# 4. Benchmarking de latência de sessão e reuso de KV cache (Criterion)
+# 4. Benchmark session latency and KV cache prefix reuse (Criterion)
 cargo bench -p kestrel-core
 ```
 
 ---
 
-## 📄 Licença
+## 📄 License
 
-Distribuído sob licença dual **MIT** ou **Apache-2.0**. Consulte o arquivo [LICENSE](LICENSE) para mais detalhes.
+Distributed under dual **MIT** or **Apache-2.0** license. See [LICENSE](LICENSE) for details.
