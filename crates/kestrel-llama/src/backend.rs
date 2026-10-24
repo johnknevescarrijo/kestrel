@@ -106,6 +106,30 @@ impl Backend for LlamaBackend {
         prompt: &str,
         options: &CompletionOptions,
     ) -> Result<CompletionResult, kestrel_core::Error> {
+        self.execute_session_completion(session, prompt, options, None)
+            .await
+    }
+
+    async fn complete_session_stream(
+        &self,
+        session: &mut Session,
+        prompt: &str,
+        options: &CompletionOptions,
+        token_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    ) -> Result<CompletionResult, kestrel_core::Error> {
+        self.execute_session_completion(session, prompt, options, Some(token_tx))
+            .await
+    }
+}
+
+impl LlamaBackend {
+    async fn execute_session_completion(
+        &self,
+        session: &mut Session,
+        prompt: &str,
+        options: &CompletionOptions,
+        token_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    ) -> Result<CompletionResult, kestrel_core::Error> {
         let model = Arc::clone(&self.model);
         let max_tokens = options.max_tokens;
 
@@ -141,6 +165,7 @@ impl Backend for LlamaBackend {
             session_id = %session.metadata.id,
             delta_len = delta_text.len(),
             add_bos,
+            streaming = token_tx.is_some(),
             "Executing session inference on llama.cpp"
         );
 
@@ -185,6 +210,25 @@ impl Backend for LlamaBackend {
 
                     let mut output = String::new();
                     for piece in completions {
+                        // Detect and truncate ChatML stop tokens
+                        if piece.contains("<|im_end|>") || piece.contains("<|endoftext|>") {
+                            let clean = piece
+                                .split("<|im_end|>")
+                                .next()
+                                .and_then(|s| s.split("<|endoftext|>").next())
+                                .unwrap_or("");
+                            if !clean.is_empty() {
+                                if let Some(ref tx) = token_tx {
+                                    let _ = tx.send(clean.to_string());
+                                }
+                                output.push_str(clean);
+                            }
+                            break;
+                        }
+
+                        if let Some(ref tx) = token_tx {
+                            let _ = tx.send(piece.clone());
+                        }
                         output.push_str(&piece);
                     }
 

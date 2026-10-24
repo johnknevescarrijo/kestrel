@@ -16,6 +16,7 @@ pub struct SessionManager<B: Backend, S: SessionStore> {
     store: Arc<S>,
     lru: Arc<Mutex<LruCache<SessionId, Session>>>,
     model_id: String,
+    hot_capacity: usize,
 }
 
 impl<B: Backend, S: SessionStore> SessionManager<B, S> {
@@ -31,7 +32,13 @@ impl<B: Backend, S: SessionStore> SessionManager<B, S> {
             store,
             lru: Arc::new(Mutex::new(LruCache::new(hot_capacity))),
             model_id: model_id.into(),
+            hot_capacity,
         }
+    }
+
+    /// Returns the configured capacity for hot in-memory sessions.
+    pub fn hot_capacity(&self) -> usize {
+        self.hot_capacity
     }
 
     /// Returns the number of sessions currently active in the hot (in-memory) tier.
@@ -76,6 +83,73 @@ impl<B: Backend, S: SessionStore> SessionManager<B, S> {
         let result = match self
             .backend
             .complete_session(&mut session, prompt, options)
+            .await
+        {
+            Ok(res) => res,
+            Err(err) => {
+                // Re-insert session into cache before failing so partial state is preserved
+                let mut lru = self.lru.lock().await;
+                lru.put(session_id.clone(), session);
+                return Err(err);
+            }
+        };
+
+        // 4. Persist updated snapshot to cold store
+        let snapshot = session.to_snapshot();
+        self.store.save(&snapshot).await?;
+
+        // 5. Place session back into hot LRU cache, handling eviction if capacity reached
+        let evicted = {
+            let mut lru = self.lru.lock().await;
+            lru.put(session_id.clone(), session)
+        };
+
+        if let Some((evicted_id, evicted_session)) = evicted {
+            info!(session = %evicted_id, "Evicting session from hot cache to cold storage");
+            let evicted_snapshot = evicted_session.to_snapshot();
+            self.store.save(&evicted_snapshot).await?;
+        }
+
+        Ok(result)
+    }
+
+    /// Executes streaming completion within the specified session, managing promotion and persistence.
+    pub async fn complete_stream(
+        &self,
+        session_id: &SessionId,
+        prompt: &str,
+        options: &CompletionOptions,
+        token_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    ) -> Result<CompletionResult, Error> {
+        debug!(session = %session_id, "Resolving session for streaming inference");
+
+        // 1. Check hot cache first (remove temporarily while running inference to release LRU lock)
+        let hot_session = {
+            let mut lru = self.lru.lock().await;
+            lru.remove(session_id)
+        };
+
+        let mut session = match hot_session {
+            Some(hot) => hot,
+            None => {
+                debug!(session = %session_id, "Hot cache miss, querying cold storage");
+                match self.store.load(session_id).await? {
+                    Some(snapshot) => {
+                        info!(session = %session_id, "Restored session snapshot from cold storage");
+                        Session::from_snapshot(snapshot)
+                    }
+                    None => {
+                        info!(session = %session_id, "Creating fresh session");
+                        Session::new(session_id.clone(), &self.model_id)
+                    }
+                }
+            }
+        };
+
+        // 3. Execute backend streaming inference with session context
+        let result = match self
+            .backend
+            .complete_session_stream(&mut session, prompt, options, token_tx)
             .await
         {
             Ok(res) => res,

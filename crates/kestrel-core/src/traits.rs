@@ -57,6 +57,19 @@ pub trait Backend: Send + Sync {
         prompt: &str,
         options: &CompletionOptions,
     ) -> Result<CompletionResult, Error>;
+
+    /// Executes inference within an existing session, streaming generated tokens via channel.
+    async fn complete_session_stream(
+        &self,
+        session: &mut Session,
+        prompt: &str,
+        options: &CompletionOptions,
+        token_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    ) -> Result<CompletionResult, Error> {
+        let res = self.complete_session(session, prompt, options).await?;
+        let _ = token_tx.send(res.text.clone());
+        Ok(res)
+    }
 }
 
 /// Persistence store interface for session snapshots (cold storage tier).
@@ -153,6 +166,25 @@ impl Backend for MockBackend {
             generated_tokens,
         })
     }
+
+    async fn complete_session_stream(
+        &self,
+        session: &mut Session,
+        prompt: &str,
+        options: &CompletionOptions,
+        token_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    ) -> Result<CompletionResult, Error> {
+        let res = self.complete_session(session, prompt, options).await?;
+        let words: Vec<&str> = res.text.split_inclusive(' ').collect();
+        if words.is_empty() {
+            let _ = token_tx.send(res.text.clone());
+        } else {
+            for word in words {
+                let _ = token_tx.send(word.to_string());
+            }
+        }
+        Ok(res)
+    }
 }
 
 #[cfg(test)]
@@ -204,5 +236,29 @@ mod tests {
 
         assert_eq!(res2.prefill_tokens, 4);
         assert_eq!(mock.call_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_mock_backend_complete_session_stream() {
+        let mock = MockBackend::new("hello world stream");
+        let mut session = Session::new(SessionId::from("sess-stream"), "mock-model");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let res = mock
+            .complete_session_stream(
+                &mut session,
+                "Prompt stream",
+                &CompletionOptions::default(),
+                tx,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(res.text, "hello world stream");
+        let mut streamed = Vec::new();
+        while let Ok(token) = rx.try_recv() {
+            streamed.push(token);
+        }
+        assert_eq!(streamed, vec!["hello ", "world ", "stream"]);
     }
 }

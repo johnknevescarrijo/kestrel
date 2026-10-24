@@ -9,8 +9,16 @@ authors.workspace = true
 [dependencies]
 kestrel-core = { workspace = true }
 kestrel-tools = { workspace = true }
+axum = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tower = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+http-body-util = { workspace = true }
+tempfile = { workspace = true }
+
