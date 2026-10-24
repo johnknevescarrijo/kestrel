@@ -3,11 +3,14 @@
 //! CLI binary for Kestrel inference engine.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use kestrel_core::traits::{Backend, CompletionOptions};
+use kestrel_core::{FileSessionStore, SessionId, SessionManager};
 use kestrel_llama::LlamaBackend;
+use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[derive(Parser)]
@@ -35,6 +38,14 @@ struct CompleteArgs {
     /// Path to the GGUF model file
     #[arg(short, long, default_value = "./models/qwen2.5-0.5b-q4.gguf")]
     model: PathBuf,
+
+    /// Optional session ID for persistent KV cache and context reuse
+    #[arg(short, long)]
+    session: Option<String>,
+
+    /// Directory for storing cold session snapshots
+    #[arg(long, default_value = "./.kestrel/sessions")]
+    session_dir: PathBuf,
 
     /// Maximum tokens to generate
     #[arg(long, default_value_t = 128)]
@@ -67,12 +78,47 @@ async fn main() -> Result<()> {
                 max_tokens: args.max_tokens,
             };
 
-            let completion = backend
-                .complete_with_options(&args.prompt, &options)
-                .await
-                .with_context(|| "inference completion failed")?;
+            if let Some(session_id) = args.session {
+                let store =
+                    Arc::new(FileSessionStore::new(&args.session_dir).with_context(|| {
+                        format!(
+                            "failed to initialize session store at '{}'",
+                            args.session_dir.display()
+                        )
+                    })?);
 
-            println!("{completion}");
+                let model_name = args
+                    .model
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("default-model");
+
+                let manager = SessionManager::new(Arc::new(backend), store, 8, model_name);
+                let sess_id = SessionId::from(session_id);
+
+                let result = manager
+                    .complete(&sess_id, &args.prompt, &options)
+                    .await
+                    .with_context(|| {
+                        format!("inference completion failed for session '{sess_id}'")
+                    })?;
+
+                info!(
+                    session_id = %sess_id,
+                    prefill_tokens = result.prefill_tokens,
+                    generated_tokens = result.generated_tokens,
+                    "Session completion succeeded"
+                );
+
+                println!("{}", result.text);
+            } else {
+                let completion = backend
+                    .complete_with_options(&args.prompt, &options)
+                    .await
+                    .with_context(|| "inference completion failed")?;
+
+                println!("{completion}");
+            }
         }
     }
 
