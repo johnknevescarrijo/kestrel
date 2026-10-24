@@ -22,6 +22,14 @@ path = "../../tests/e2e.rs"
 name = "session_integration"
 path = "../../tests/session_integration.rs"
 
+[[test]]
+name = "server_integration"
+path = "../../tests/server_integration.rs"
+
+[[test]]
+name = "openai_contract"
+path = "../../tests/openai_contract.rs"
+
 [dependencies]
 kestrel-core = { workspace = true }
 kestrel-llama = { workspace = true }
@@ -36,3 +44,8 @@ anyhow = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tower = { workspace = true }
+http-body-util = { workspace = true }
+serde_json = { workspace = true }
+
+
