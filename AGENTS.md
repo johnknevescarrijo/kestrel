@@ -30,7 +30,7 @@ modelos. É a *engine* que agentes (CLIs, SDKs) consomem.
 - [x] API HTTP compatível com `/v1/chat/completions` e `/v1/models`.
 - [x] Sessões persistentes: `SessionId` → estado de KV cache salvo/restaurado.
 - [ ] Tiering automático de sessões: **hot** (VRAM), **warm** (RAM), **cold** (disco).
-- [ ] Tool calling com parsing de JSON estruturado, validação de schema e retry.
+- [x] Tool calling com parsing de JSON estruturado, validação de schema e retry.
 - [x] Suporte a modelos GGUF via `llama.cpp`.
 - [x] Observabilidade via `tracing` (spans por requisição e por sessão).
 - [ ] Binário único, multiplataforma (Linux, macOS, Windows).
@@ -300,11 +300,11 @@ anterior.**
 - **Aceite:** Open WebUI consegue conversar com kestrel sem patches. (Concluído)
 
 ### M3 — Tool calling confiável
-- [ ] Parsing de tool call estruturado, validação JSON Schema.
-- [ ] Retry com feedback ao modelo em caso de falha (max N).
-- [ ] Teste com cenários: JSON truncado, tipo errado, campo faltando,
+- [x] Parsing de tool call estruturado, validação JSON Schema.
+- [x] Retry com feedback ao modelo em caso de falha (max N).
+- [x] Teste com cenários: JSON truncado, tipo errado, campo faltando,
       tool inexistente.
-- **Aceite:** suite de 20 casos passa com >= 95% de acerto.
+- **Aceite:** suite de 20 casos passa com >= 95% de acerto. (Concluído)
 
 ### M4 — Tiering de KV cache
 - [ ] Hot (VRAM) / warm (RAM) / cold (disco) com budgets configuráveis.
