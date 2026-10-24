@@ -1,0 +1,7 @@
+/target
+/models/*
+!/models/.gitkeep
+.env
+*.swp
+*~
+.DS_Store
