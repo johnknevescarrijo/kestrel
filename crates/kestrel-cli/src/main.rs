@@ -8,7 +8,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use kestrel_core::traits::{Backend, CompletionOptions};
-use kestrel_core::{FileSessionStore, SessionId, SessionManager};
+use kestrel_core::{FileSessionStore, SessionId, SessionManager, TierPolicy};
 use kestrel_llama::LlamaBackend;
 use kestrel_server::{build_router, AppState};
 use tracing::info;
@@ -55,6 +55,14 @@ struct ServeArgs {
     /// Hot in-memory session capacity
     #[arg(long, default_value_t = 16)]
     hot_capacity: usize,
+
+    /// Hot KV cache memory budget in megabytes (falls back to KESTREL_HOT_BUDGET_MB env var)
+    #[arg(long)]
+    hot_budget_mb: Option<usize>,
+
+    /// Warm KV cache memory budget in megabytes (falls back to KESTREL_WARM_BUDGET_MB env var)
+    #[arg(long)]
+    warm_budget_mb: Option<usize>,
 }
 
 #[derive(Args)]
@@ -173,11 +181,17 @@ async fn main() -> Result<()> {
                 .and_then(|n| n.to_str())
                 .unwrap_or("default-model");
 
-            let manager = Arc::new(SessionManager::new(
-                backend,
-                store,
-                args.hot_capacity,
-                model_name,
+            let mut policy = TierPolicy::from_env();
+            policy.max_hot_sessions = args.hot_capacity;
+            if let Some(hot_mb) = args.hot_budget_mb {
+                policy.hot_budget_bytes = hot_mb * 1024 * 1024;
+            }
+            if let Some(warm_mb) = args.warm_budget_mb {
+                policy.warm_budget_bytes = warm_mb * 1024 * 1024;
+            }
+
+            let manager = Arc::new(SessionManager::with_policy(
+                backend, store, policy, model_name,
             ));
 
             let state = Arc::new(AppState::new(manager, model_name));

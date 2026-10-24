@@ -34,7 +34,12 @@ path = "../../tests/openai_contract.rs"
 name = "tool_calling_suite"
 path = "../../tests/tool_calling_suite.rs"
 
+[[test]]
+name = "tiering_integration"
+path = "../../tests/tiering_integration.rs"
+
 [dependencies]
+
 kestrel-core = { workspace = true }
 kestrel-llama = { workspace = true }
 kestrel-server = { workspace = true }
