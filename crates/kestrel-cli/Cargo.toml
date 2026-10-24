@@ -38,6 +38,10 @@ path = "../../tests/tool_calling_suite.rs"
 name = "tiering_integration"
 path = "../../tests/tiering_integration.rs"
 
+[[test]]
+name = "concurrency_stress"
+path = "../../tests/concurrency_stress.rs"
+
 [dependencies]
 
 kestrel-core = { workspace = true }
