@@ -68,6 +68,7 @@ pub fn build_router<B: Backend + 'static, S: SessionStore + 'static>(
             post(handlers::chat_completions::<B, S>),
         )
         // Kestrel extensions
+        .route("/kestrel/metrics", get(handlers::get_metrics::<B, S>))
         .route("/kestrel/sessions", get(handlers::list_sessions::<B, S>))
         .route("/kestrel/sessions/:id", get(handlers::get_session::<B, S>))
         .route(

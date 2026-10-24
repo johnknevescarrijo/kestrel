@@ -246,10 +246,20 @@ pub struct ChatCompletionChunk {
 pub struct SessionStats {
     /// Number of hot sessions resident in memory.
     pub hot_sessions: usize,
-    /// Total sessions across hot and cold tiers.
+    /// Number of warm sessions cached in RAM.
+    pub warm_sessions: usize,
+    /// Total sessions across hot, warm, and cold tiers.
     pub total_sessions: usize,
-    /// Hot cache configured capacity.
+    /// Hot cache configured session capacity.
     pub hot_capacity: usize,
+    /// Hot cache memory currently used in bytes.
+    pub hot_used_bytes: usize,
+    /// Warm cache memory currently used in bytes.
+    pub warm_used_bytes: usize,
+    /// Hot cache memory budget in bytes.
+    pub hot_budget_bytes: usize,
+    /// Warm cache memory budget in bytes.
+    pub warm_budget_bytes: usize,
 }
 
 /// Response returned by `GET /kestrel/sessions`.

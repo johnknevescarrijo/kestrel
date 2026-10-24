@@ -61,7 +61,7 @@ fn current_timestamp() -> u64 {
 pub async fn list_models<B: Backend, S: SessionStore>(
     State(state): State<Arc<AppState<B, S>>>,
 ) -> Result<Json<ModelListResponse>, ServerError> {
-    let response = ModelListResponse {
+    Ok(Json(ModelListResponse {
         object: "list".to_string(),
         data: vec![ModelObject {
             id: state.model_id.clone(),
@@ -69,8 +69,7 @@ pub async fn list_models<B: Backend, S: SessionStore>(
             created: 1677610602,
             owned_by: "kestrel".to_string(),
         }],
-    };
-    Ok(Json(response))
+    }))
 }
 
 /// Validates that a session ID string only contains permitted characters.
@@ -84,7 +83,6 @@ pub(crate) fn validate_and_create_session_id(id: &str) -> Result<SessionId, Serv
     let is_valid = id
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-
     if !is_valid || id.contains("..") {
         return Err(ServerError::BadRequest {
             reason: format!(
@@ -400,4 +398,4 @@ pub async fn chat_completions<B: Backend + 'static, S: SessionStore + 'static>(
 }
 
 // Re-export session endpoints from session_handlers module.
-pub use crate::session_handlers::{delete_session, get_session, list_sessions};
+pub use crate::session_handlers::{delete_session, get_metrics, get_session, list_sessions};

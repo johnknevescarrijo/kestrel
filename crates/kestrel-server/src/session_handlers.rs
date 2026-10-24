@@ -17,15 +17,31 @@ pub async fn list_sessions<B: Backend, S: SessionStore>(
 ) -> Result<Json<SessionsListResponse>, ServerError> {
     let sessions = state.manager.list_sessions().await?;
     let hot_sessions = state.manager.hot_session_count().await;
-    let hot_capacity = state.manager.hot_capacity();
+    let warm_sessions = state.manager.warm_session_count().await;
+    let hot_used_bytes = state.manager.hot_used_bytes().await;
+    let warm_used_bytes = state.manager.warm_used_bytes().await;
+    let policy = state.manager.policy();
 
     let stats = SessionStats {
         hot_sessions,
+        warm_sessions,
         total_sessions: sessions.len(),
-        hot_capacity,
+        hot_capacity: state.manager.hot_capacity(),
+        hot_used_bytes,
+        warm_used_bytes,
+        hot_budget_bytes: policy.hot_budget_bytes,
+        warm_budget_bytes: policy.warm_budget_bytes,
     };
 
     Ok(Json(SessionsListResponse { sessions, stats }))
+}
+
+/// `GET /kestrel/metrics`
+pub async fn get_metrics<B: Backend, S: SessionStore>(
+    State(state): State<Arc<AppState<B, S>>>,
+) -> Json<kestrel_core::TierMetricsSnapshot> {
+    let snapshot = state.manager.metrics_snapshot().await;
+    Json(snapshot)
 }
 
 /// `GET /kestrel/sessions/:id`
