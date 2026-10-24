@@ -287,11 +287,11 @@ anterior.**
 - **Aceite:** rodar Qwen2.5-0.5B no CI local, imprimir resposta. (Concluído)
 
 ### M1 — Sessões persistentes
-- [ ] `Session` com `SessionId`, save/load de KV cache em disco.
-- [ ] `SessionManager` com LRU e `SessionStore` (trait + impl em arquivo).
-- [ ] Teste: duas chamadas com mesmo `SessionId` reutilizam prefixo
+- [x] `Session` com `SessionId`, save/load de KV cache em disco.
+- [x] `SessionManager` com LRU e `SessionStore` (trait + impl em arquivo).
+- [x] Teste: duas chamadas com mesmo `SessionId` reutilizam prefixo
       (validar via métrica de tokens processados).
-- **Aceite:** benchmark mostra redução de tokens de prefill na 2ª chamada.
+- **Aceite:** benchmark mostra redução de tokens de prefill na 2ª chamada. (Concluído)
 
 ### M2 — API OpenAI-compatible
 - [ ] `/v1/chat/completions` (JSON e SSE) e `/v1/models`.
