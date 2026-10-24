@@ -29,8 +29,9 @@ modelos. É a *engine* que agentes (CLIs, SDKs) consomem.
 ### Objetivos (v1.0)
 - [x] API HTTP compatível com `/v1/chat/completions` e `/v1/models`.
 - [x] Sessões persistentes: `SessionId` → estado de KV cache salvo/restaurado.
-- [ ] Tiering automático de sessões: **hot** (VRAM), **warm** (RAM), **cold** (disco).
+- [x] Tiering automático de sessões: **hot** (VRAM), **warm** (RAM), **cold** (disco).
 - [x] Tool calling com parsing de JSON estruturado, validação de schema e retry.
+
 - [x] Suporte a modelos GGUF via `llama.cpp`.
 - [x] Observabilidade via `tracing` (spans por requisição e por sessão).
 - [ ] Binário único, multiplataforma (Linux, macOS, Windows).
@@ -307,10 +308,11 @@ anterior.**
 - **Aceite:** suite de 20 casos passa com >= 95% de acerto. (Concluído)
 
 ### M4 — Tiering de KV cache
-- [ ] Hot (VRAM) / warm (RAM) / cold (disco) com budgets configuráveis.
-- [ ] Promoção/demoção por LRU + política configurável.
-- [ ] Métrica de hit-rate exposta em `/kestrel/metrics`.
-- **Aceite:** 20 sessões simultâneas em 8 GB de VRAM sem OOM.
+- [x] Hot (VRAM) / warm (RAM) / cold (disco) com budgets configuráveis.
+- [x] Promoção/demoção por LRU + política configurável.
+- [x] Métrica de hit-rate exposta em `/kestrel/metrics`.
+- **Aceite:** 20 sessões simultâneas em 8 GB de VRAM sem OOM. (Concluído)
+
 
 ### M5 — Concorrência e batching
 - [ ] Continuous batching de sessões hot (uma forward pass, N sessões).
