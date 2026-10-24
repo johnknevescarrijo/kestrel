@@ -27,12 +27,12 @@ modelos. É a *engine* que agentes (CLIs, SDKs) consomem.
 ## 2. Objetivos e Não-Objetivos
 
 ### Objetivos (v1.0)
-- [ ] API HTTP compatível com `/v1/chat/completions` e `/v1/models`.
-- [ ] Sessões persistentes: `SessionId` → estado de KV cache salvo/restaurado.
+- [x] API HTTP compatível com `/v1/chat/completions` e `/v1/models`.
+- [x] Sessões persistentes: `SessionId` → estado de KV cache salvo/restaurado.
 - [ ] Tiering automático de sessões: **hot** (VRAM), **warm** (RAM), **cold** (disco).
 - [ ] Tool calling com parsing de JSON estruturado, validação de schema e retry.
-- [ ] Suporte a modelos GGUF via `llama.cpp`.
-- [ ] Observabilidade via `tracing` (spans por requisição e por sessão).
+- [x] Suporte a modelos GGUF via `llama.cpp`.
+- [x] Observabilidade via `tracing` (spans por requisição e por sessão).
 - [ ] Binário único, multiplataforma (Linux, macOS, Windows).
 
 ### Não-Objetivos (v1.0)
@@ -294,10 +294,10 @@ anterior.**
 - **Aceite:** benchmark mostra redução de tokens de prefill na 2ª chamada. (Concluído)
 
 ### M2 — API OpenAI-compatible
-- [ ] `/v1/chat/completions` (JSON e SSE) e `/v1/models`.
-- [ ] Extensão `/kestrel/sessions` (list, delete, stats).
-- [ ] Teste de contrato comparando com cliente oficial `openai` (Python).
-- **Aceite:** Open WebUI consegue conversar com kestrel sem patches.
+- [x] `/v1/chat/completions` (JSON e SSE) e `/v1/models`.
+- [x] Extensão `/kestrel/sessions` (list, delete, stats).
+- [x] Teste de contrato comparando com cliente oficial `openai` (Python).
+- **Aceite:** Open WebUI consegue conversar com kestrel sem patches. (Concluído)
 
 ### M3 — Tool calling confiável
 - [ ] Parsing de tool call estruturado, validação JSON Schema.
