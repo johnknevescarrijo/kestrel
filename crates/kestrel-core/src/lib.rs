@@ -16,4 +16,6 @@ pub use manager::SessionManager;
 pub use session::{Session, SessionId, SessionMetadata, SessionSnapshot};
 pub use store::FileSessionStore;
 pub use tier::{TierLevel, TierMetricsCounters, TierMetricsSnapshot, TierPolicy};
-pub use traits::{Backend, CompletionOptions, CompletionResult, MockBackend, SessionStore};
+pub use traits::{
+    Backend, BatchItem, CompletionOptions, CompletionResult, MockBackend, SessionStore,
+};

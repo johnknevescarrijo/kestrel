@@ -32,6 +32,16 @@ pub struct CompletionResult {
     pub generated_tokens: usize,
 }
 
+/// A single item within a batch completion request.
+pub struct BatchItem<'a> {
+    /// Mutable reference to the target session context.
+    pub session: &'a mut Session,
+    /// Prompt text to extend or evaluate.
+    pub prompt: &'a str,
+    /// Completion parameters.
+    pub options: &'a CompletionOptions,
+}
+
 /// LLM backend abstraction interface.
 ///
 /// Implementations may run natively via `llama.cpp` or simulate model output for testing.
@@ -57,6 +67,23 @@ pub trait Backend: Send + Sync {
         prompt: &str,
         options: &CompletionOptions,
     ) -> Result<CompletionResult, Error>;
+
+    /// Executes completion for a batch of sessions.
+    ///
+    /// By default, falls back to running `complete_session` sequentially.
+    async fn complete_batch(
+        &self,
+        items: &mut [BatchItem<'_>],
+    ) -> Result<Vec<CompletionResult>, Error> {
+        let mut results = Vec::with_capacity(items.len());
+        for item in items.iter_mut() {
+            let res = self
+                .complete_session(item.session, item.prompt, item.options)
+                .await?;
+            results.push(res);
+        }
+        Ok(results)
+    }
 
     /// Executes inference within an existing session, streaming generated tokens via channel.
     async fn complete_session_stream(
@@ -93,6 +120,8 @@ pub trait SessionStore: Send + Sync {
 pub struct MockBackend {
     fixed_response: String,
     call_count: Arc<AtomicUsize>,
+    batch_call_count: Arc<AtomicUsize>,
+    forward_pass_delay: Option<std::time::Duration>,
     kv_bytes_per_token: usize,
     fixed_kv_size: Option<usize>,
     attach_handle: bool,
@@ -104,10 +133,23 @@ impl MockBackend {
         Self {
             fixed_response: response.into(),
             call_count: Arc::new(AtomicUsize::new(0)),
+            batch_call_count: Arc::new(AtomicUsize::new(0)),
+            forward_pass_delay: None,
             kv_bytes_per_token: 4,
             fixed_kv_size: None,
             attach_handle: true,
         }
+    }
+
+    /// Configures simulated forward pass latency.
+    pub fn with_forward_pass_delay(mut self, delay: std::time::Duration) -> Self {
+        self.forward_pass_delay = Some(delay);
+        self
+    }
+
+    /// Returns the number of times batch execution was invoked.
+    pub fn batch_call_count(&self) -> usize {
+        self.batch_call_count.load(Ordering::SeqCst)
     }
 
     /// Configures simulated KV cache bytes generated per context token.
@@ -132,27 +174,8 @@ impl MockBackend {
     pub fn call_count(&self) -> usize {
         self.call_count.load(Ordering::SeqCst)
     }
-}
 
-#[async_trait]
-impl Backend for MockBackend {
-    async fn complete_with_options(
-        &self,
-        _prompt: &str,
-        _options: &CompletionOptions,
-    ) -> Result<String, Error> {
-        self.call_count.fetch_add(1, Ordering::SeqCst);
-        Ok(self.fixed_response.clone())
-    }
-
-    async fn complete_session(
-        &self,
-        session: &mut Session,
-        prompt: &str,
-        _options: &CompletionOptions,
-    ) -> Result<CompletionResult, Error> {
-        self.call_count.fetch_add(1, Ordering::SeqCst);
-
+    fn process_mock_session(&self, session: &mut Session, prompt: &str) -> CompletionResult {
         if self.attach_handle && session.backend_handle.is_none() {
             session.backend_handle = Some(Arc::new(()));
         }
@@ -168,7 +191,6 @@ impl Backend for MockBackend {
             prefill_tokens = prompt.split_whitespace().count().max(1);
             session.context_text = format!("{}{}", prompt, self.fixed_response);
         } else {
-            // Incremental turn appended to session
             prefill_tokens = prompt.split_whitespace().count().max(1);
             session.context_text =
                 format!("{}{}{}", session.context_text, prompt, self.fixed_response);
@@ -192,11 +214,52 @@ impl Backend for MockBackend {
 
         session.record_access(session.tokens.len(), kv_bytes);
 
-        Ok(CompletionResult {
+        CompletionResult {
             text: self.fixed_response.clone(),
             prefill_tokens,
             generated_tokens,
-        })
+        }
+    }
+}
+
+#[async_trait]
+impl Backend for MockBackend {
+    async fn complete_with_options(
+        &self,
+        _prompt: &str,
+        _options: &CompletionOptions,
+    ) -> Result<String, Error> {
+        self.call_count.fetch_add(1, Ordering::SeqCst);
+        Ok(self.fixed_response.clone())
+    }
+
+    async fn complete_session(
+        &self,
+        session: &mut Session,
+        prompt: &str,
+        _options: &CompletionOptions,
+    ) -> Result<CompletionResult, Error> {
+        self.call_count.fetch_add(1, Ordering::SeqCst);
+        if let Some(delay) = self.forward_pass_delay {
+            tokio::time::sleep(delay).await;
+        }
+        Ok(self.process_mock_session(session, prompt))
+    }
+
+    async fn complete_batch(
+        &self,
+        items: &mut [BatchItem<'_>],
+    ) -> Result<Vec<CompletionResult>, Error> {
+        self.batch_call_count.fetch_add(1, Ordering::SeqCst);
+        if let Some(delay) = self.forward_pass_delay {
+            tokio::time::sleep(delay).await;
+        }
+        let mut results = Vec::with_capacity(items.len());
+        for item in items.iter_mut() {
+            self.call_count.fetch_add(1, Ordering::SeqCst);
+            results.push(self.process_mock_session(item.session, item.prompt));
+        }
+        Ok(results)
     }
 
     async fn complete_session_stream(
@@ -292,5 +355,34 @@ mod tests {
             streamed.push(token);
         }
         assert_eq!(streamed, vec!["hello ", "world ", "stream"]);
+    }
+
+    #[tokio::test]
+    async fn test_mock_backend_complete_batch() {
+        let mock = MockBackend::new("mock batch response")
+            .with_forward_pass_delay(std::time::Duration::from_millis(5));
+        let mut session1 = Session::new(SessionId::from("sess-b1"), "mock-model");
+        let mut session2 = Session::new(SessionId::from("sess-b2"), "mock-model");
+        let options = CompletionOptions::default();
+
+        let mut items = vec![
+            BatchItem {
+                session: &mut session1,
+                prompt: "Batch prompt 1",
+                options: &options,
+            },
+            BatchItem {
+                session: &mut session2,
+                prompt: "Batch prompt 2",
+                options: &options,
+            },
+        ];
+
+        let results = mock.complete_batch(&mut items).await.unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].text, "mock batch response");
+        assert_eq!(results[1].text, "mock batch response");
+        assert_eq!(mock.batch_call_count(), 1);
+        assert_eq!(mock.call_count(), 2);
     }
 }
