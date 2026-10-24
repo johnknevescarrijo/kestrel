@@ -28,6 +28,7 @@ kestrel-llama = { workspace = true }
 kestrel-server = { workspace = true }
 kestrel-tools = { workspace = true }
 tokio = { workspace = true }
+axum = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

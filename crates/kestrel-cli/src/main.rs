@@ -10,6 +10,7 @@ use clap::{Args, Parser, Subcommand};
 use kestrel_core::traits::{Backend, CompletionOptions};
 use kestrel_core::{FileSessionStore, SessionId, SessionManager};
 use kestrel_llama::LlamaBackend;
+use kestrel_server::{build_router, AppState};
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -28,6 +29,32 @@ struct Cli {
 enum Commands {
     /// Generate a text completion for a prompt using a local GGUF model
     Complete(CompleteArgs),
+
+    /// Start an OpenAI-compatible HTTP inference server
+    Serve(ServeArgs),
+}
+
+#[derive(Args)]
+struct ServeArgs {
+    /// Path to the GGUF model file
+    #[arg(short, long, default_value = "./models/qwen2.5-0.5b-q4.gguf")]
+    model: PathBuf,
+
+    /// Port to listen on
+    #[arg(short, long, default_value_t = 8080)]
+    port: u16,
+
+    /// Host address to bind
+    #[arg(long, default_value = "0.0.0.0")]
+    host: String,
+
+    /// Directory for storing cold session snapshots
+    #[arg(long, default_value = "./.kestrel/sessions")]
+    session_dir: PathBuf,
+
+    /// Hot in-memory session capacity
+    #[arg(long, default_value_t = 16)]
+    hot_capacity: usize,
 }
 
 #[derive(Args)]
@@ -119,6 +146,52 @@ async fn main() -> Result<()> {
 
                 println!("{completion}");
             }
+        }
+        Commands::Serve(args) => {
+            if !args.model.exists() {
+                anyhow::bail!(
+                    "Model file not found at '{}'. Run ./scripts/fetch-test-model.sh or specify --model <path>.",
+                    args.model.display()
+                );
+            }
+
+            let backend =
+                Arc::new(LlamaBackend::load_from_file(&args.model).with_context(|| {
+                    format!("failed to load GGUF model from '{}'", args.model.display())
+                })?);
+
+            let store = Arc::new(FileSessionStore::new(&args.session_dir).with_context(|| {
+                format!(
+                    "failed to initialize session store at '{}'",
+                    args.session_dir.display()
+                )
+            })?);
+
+            let model_name = args
+                .model
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("default-model");
+
+            let manager = Arc::new(SessionManager::new(
+                backend,
+                store,
+                args.hot_capacity,
+                model_name,
+            ));
+
+            let state = Arc::new(AppState::new(manager, model_name));
+            let router = build_router(state);
+
+            let addr = format!("{}:{}", args.host, args.port);
+            let listener = tokio::net::TcpListener::bind(&addr)
+                .await
+                .with_context(|| format!("failed to bind TCP listener to '{addr}'"))?;
+
+            info!("Kestrel OpenAI HTTP server running at http://{addr}");
+            axum::serve(listener, router)
+                .await
+                .with_context(|| "HTTP server runtime encountered an error")?;
         }
     }
 
