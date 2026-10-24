@@ -108,6 +108,18 @@ impl<K: Hash + Eq + Clone, V> LruCache<K, V> {
         }
     }
 
+    /// Removes and returns the least recently used key-value pair from the cache.
+    pub fn pop_lru(&mut self) -> Option<(K, V)> {
+        self.order
+            .pop_front()
+            .and_then(|oldest_key| self.map.remove(&oldest_key).map(|val| (oldest_key, val)))
+    }
+
+    /// Returns an iterator visiting all values in arbitrary order.
+    pub fn values(&self) -> impl Iterator<Item = &V> {
+        self.map.values()
+    }
+
     /// Clears all entries from the cache.
     pub fn clear(&mut self) {
         self.map.clear();
@@ -202,5 +214,34 @@ mod tests {
         assert_eq!(cache.get(&"a"), None);
         assert_eq!(cache.get(&"b"), Some(&2));
         assert_eq!(cache.get(&"c"), Some(&3));
+    }
+
+    #[test]
+    fn test_lru_pop_lru_and_values() {
+        let mut cache = LruCache::new(3);
+        cache.put("a", 10);
+        cache.put("b", 20);
+        cache.put("c", 30);
+
+        // Sum of values
+        let sum: i32 = cache.values().sum();
+        assert_eq!(sum, 60);
+
+        // Access "a" so "b" becomes the oldest
+        assert_eq!(cache.get(&"a"), Some(&10));
+
+        let popped = cache.pop_lru();
+        assert_eq!(popped, Some(("b", 20)));
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.get(&"b"), None);
+
+        let popped_next = cache.pop_lru();
+        assert_eq!(popped_next, Some(("c", 30)));
+
+        let popped_last = cache.pop_lru();
+        assert_eq!(popped_last, Some(("a", 10)));
+
+        assert_eq!(cache.pop_lru(), None);
+        assert!(cache.is_empty());
     }
 }

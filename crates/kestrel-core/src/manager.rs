@@ -1,4 +1,4 @@
-//! Session lifecycle management with hot/cold tiering and LRU cache eviction.
+//! Session lifecycle management with 3-tier KV caching (Hot, Warm, Cold) and budget enforcement.
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -6,45 +6,234 @@ use tracing::{debug, info};
 
 use crate::error::Error;
 use crate::lru::LruCache;
-use crate::session::{Session, SessionId, SessionMetadata};
+use crate::session::{Session, SessionId, SessionMetadata, SessionSnapshot};
+use crate::tier::{TierLevel, TierMetricsCounters, TierMetricsSnapshot, TierPolicy};
 use crate::traits::{Backend, CompletionOptions, CompletionResult, SessionStore};
 
-/// Orchestrates session state, hot (in-memory) caching, cold (disk) persistence,
-/// and backend inference delegation.
+/// Orchestrates session lifecycle across Hot (VRAM), Warm (RAM), and Cold (disk) tiers.
 pub struct SessionManager<B: Backend, S: SessionStore> {
     backend: Arc<B>,
     store: Arc<S>,
-    lru: Arc<Mutex<LruCache<SessionId, Session>>>,
+    hot: Arc<Mutex<LruCache<SessionId, Session>>>,
+    warm: Arc<Mutex<LruCache<SessionId, SessionSnapshot>>>,
+    policy: TierPolicy,
     model_id: String,
-    hot_capacity: usize,
+    metrics: TierMetricsCounters,
 }
 
 impl<B: Backend, S: SessionStore> SessionManager<B, S> {
-    /// Creates a new `SessionManager`.
+    /// Creates a new `SessionManager` with default environment-based tier policy and custom hot capacity.
     pub fn new(
         backend: Arc<B>,
         store: Arc<S>,
         hot_capacity: usize,
         model_id: impl Into<String>,
     ) -> Self {
+        let mut policy = TierPolicy::from_env();
+        policy.max_hot_sessions = hot_capacity;
+        Self::with_policy(backend, store, policy, model_id)
+    }
+
+    /// Creates a new `SessionManager` configured with an explicit `TierPolicy`.
+    pub fn with_policy(
+        backend: Arc<B>,
+        store: Arc<S>,
+        policy: TierPolicy,
+        model_id: impl Into<String>,
+    ) -> Self {
+        let hot_cap = policy.max_hot_sessions.max(1);
+        let warm_cap = policy.max_warm_sessions.max(1);
         Self {
             backend,
             store,
-            lru: Arc::new(Mutex::new(LruCache::new(hot_capacity))),
+            hot: Arc::new(Mutex::new(LruCache::new(hot_cap))),
+            warm: Arc::new(Mutex::new(LruCache::new(warm_cap))),
+            policy,
             model_id: model_id.into(),
-            hot_capacity,
+            metrics: TierMetricsCounters::new(),
         }
     }
 
-    /// Returns the configured capacity for hot in-memory sessions.
+    /// Returns the maximum capacity for hot active sessions.
     pub fn hot_capacity(&self) -> usize {
-        self.hot_capacity
+        self.policy.max_hot_sessions
     }
 
-    /// Returns the number of sessions currently active in the hot (in-memory) tier.
+    /// Returns the active tier policy.
+    pub fn policy(&self) -> &TierPolicy {
+        &self.policy
+    }
+
+    /// Returns the number of sessions currently active in the hot (VRAM) tier.
     pub async fn hot_session_count(&self) -> usize {
-        let lru = self.lru.lock().await;
-        lru.len()
+        self.hot.lock().await.len()
+    }
+
+    /// Returns the number of sessions currently cached in the warm (RAM) tier.
+    pub async fn warm_session_count(&self) -> usize {
+        self.warm.lock().await.len()
+    }
+
+    /// Returns the total KV cache bytes currently resident in the hot tier.
+    pub async fn hot_used_bytes(&self) -> usize {
+        self.hot
+            .lock()
+            .await
+            .values()
+            .map(|s| s.metadata.kv_size_bytes)
+            .sum()
+    }
+
+    /// Returns the total KV cache bytes currently resident in the warm tier.
+    pub async fn warm_used_bytes(&self) -> usize {
+        self.warm
+            .lock()
+            .await
+            .values()
+            .map(|s| s.metadata.kv_size_bytes)
+            .sum()
+    }
+
+    /// Queries the current storage tier level of a given session.
+    pub async fn session_tier(&self, session_id: &SessionId) -> Result<Option<TierLevel>, Error> {
+        if self.hot.lock().await.contains_key(session_id) {
+            return Ok(Some(TierLevel::Hot));
+        }
+        if self.warm.lock().await.contains_key(session_id) {
+            return Ok(Some(TierLevel::Warm));
+        }
+        if self.store.load(session_id).await?.is_some() {
+            return Ok(Some(TierLevel::Cold));
+        }
+        Ok(None)
+    }
+
+    /// Generates a point-in-time metrics snapshot of tiering performance and utilization.
+    pub async fn metrics_snapshot(&self) -> TierMetricsSnapshot {
+        let hot_sessions = self.hot_session_count().await;
+        let warm_sessions = self.warm_session_count().await;
+        let hot_used = self.hot_used_bytes().await;
+        let warm_used = self.warm_used_bytes().await;
+        self.metrics.snapshot(
+            hot_sessions,
+            warm_sessions,
+            hot_used,
+            warm_used,
+            &self.policy,
+        )
+    }
+
+    /// Resolves a session for inference across Hot, Warm, and Cold tiers.
+    async fn resolve_session(&self, session_id: &SessionId) -> Result<Session, Error> {
+        debug!(session = %session_id, "Resolving session across tiers");
+        if let Some(session) = self.hot.lock().await.remove(session_id) {
+            self.metrics.record_hot_hit();
+            return Ok(session);
+        }
+        if let Some(snapshot) = self.warm.lock().await.remove(session_id) {
+            self.metrics.record_warm_hit();
+            self.metrics.record_promotion_warm_to_hot();
+            info!(session = %session_id, "Promoting session from warm to hot tier");
+            return Ok(Session::from_snapshot(snapshot));
+        }
+        if let Some(snapshot) = self.store.load(session_id).await? {
+            self.metrics.record_cold_hit();
+            self.metrics.record_promotion_cold_to_hot();
+            info!(session = %session_id, "Promoting session from cold storage to hot tier");
+            return Ok(Session::from_snapshot(snapshot));
+        }
+        self.metrics.record_miss();
+        info!(session = %session_id, "Creating fresh session");
+        Ok(Session::new(session_id.clone(), &self.model_id))
+    }
+
+    /// Commits an updated session back to the hot tier, enforcing hot and warm memory budgets.
+    async fn commit_session(&self, session_id: &SessionId, session: Session) -> Result<(), Error> {
+        let snapshot = session.to_snapshot();
+        self.store.save(&snapshot).await?;
+
+        let mut to_warm = Vec::new();
+        {
+            let mut hot = self.hot.lock().await;
+            hot.remove(session_id);
+            let needed = session.metadata.kv_size_bytes;
+            while !hot.is_empty()
+                && (hot.len() >= self.policy.max_hot_sessions
+                    || hot
+                        .values()
+                        .map(|s| s.metadata.kv_size_bytes)
+                        .sum::<usize>()
+                        + needed
+                        > self.policy.hot_budget_bytes)
+            {
+                if let Some((evicted_id, evicted_session)) = hot.pop_lru() {
+                    info!(session = %evicted_id, "Demoting session from hot to warm tier");
+                    self.metrics.record_demotion_hot_to_warm();
+                    to_warm.push(evicted_session.to_snapshot());
+                }
+            }
+            hot.put(session_id.clone(), session);
+        }
+
+        for snap in to_warm {
+            self.insert_warm(snap).await?;
+        }
+        Ok(())
+    }
+
+    /// Inserts a snapshot into the warm tier, enforcing warm capacity and byte budgets.
+    async fn insert_warm(&self, snap: SessionSnapshot) -> Result<(), Error> {
+        let mut to_cold = Vec::new();
+        {
+            let mut warm = self.warm.lock().await;
+            let snap_id = snap.metadata.id.clone();
+            warm.remove(&snap_id);
+            let needed = snap.metadata.kv_size_bytes;
+            while !warm.is_empty()
+                && (warm.len() >= self.policy.max_warm_sessions
+                    || warm
+                        .values()
+                        .map(|s| s.metadata.kv_size_bytes)
+                        .sum::<usize>()
+                        + needed
+                        > self.policy.warm_budget_bytes)
+            {
+                if let Some((evicted_id, evicted_snap)) = warm.pop_lru() {
+                    info!(session = %evicted_id, "Demoting session from warm to cold tier");
+                    self.metrics.record_demotion_warm_to_cold();
+                    to_cold.push(evicted_snap);
+                }
+            }
+            warm.put(snap_id, snap);
+        }
+
+        for cold_snap in to_cold {
+            self.store.save(&cold_snap).await?;
+        }
+        Ok(())
+    }
+
+    /// Manually demotes an active session from hot tier to warm tier.
+    pub async fn demote_hot_to_warm(&self, session_id: &SessionId) -> Result<bool, Error> {
+        let session = self.hot.lock().await.remove(session_id);
+        if let Some(session) = session {
+            self.metrics.record_demotion_hot_to_warm();
+            let snap = session.to_snapshot();
+            self.insert_warm(snap).await?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Manually evicts a session from hot or warm tiers into cold storage.
+    pub async fn evict_to_cold(&self, session_id: &SessionId) -> Result<(), Error> {
+        if let Some(session) = self.hot.lock().await.remove(session_id) {
+            self.store.save(&session.to_snapshot()).await?;
+        } else if let Some(snap) = self.warm.lock().await.remove(session_id) {
+            self.store.save(&snap).await?;
+        }
+        Ok(())
     }
 
     /// Executes completion within the specified session, managing promotion and persistence.
@@ -54,32 +243,7 @@ impl<B: Backend, S: SessionStore> SessionManager<B, S> {
         prompt: &str,
         options: &CompletionOptions,
     ) -> Result<CompletionResult, Error> {
-        debug!(session = %session_id, "Resolving session for inference");
-
-        // 1. Check hot cache first (remove temporarily while running inference to release LRU lock)
-        let hot_session = {
-            let mut lru = self.lru.lock().await;
-            lru.remove(session_id)
-        };
-
-        let mut session = match hot_session {
-            Some(hot) => hot,
-            None => {
-                debug!(session = %session_id, "Hot cache miss, querying cold storage");
-                match self.store.load(session_id).await? {
-                    Some(snapshot) => {
-                        info!(session = %session_id, "Restored session snapshot from cold storage");
-                        Session::from_snapshot(snapshot)
-                    }
-                    None => {
-                        info!(session = %session_id, "Creating fresh session");
-                        Session::new(session_id.clone(), &self.model_id)
-                    }
-                }
-            }
-        };
-
-        // 3. Execute backend inference with session context
+        let mut session = self.resolve_session(session_id).await?;
         let result = match self
             .backend
             .complete_session(&mut session, prompt, options)
@@ -87,29 +251,11 @@ impl<B: Backend, S: SessionStore> SessionManager<B, S> {
         {
             Ok(res) => res,
             Err(err) => {
-                // Re-insert session into cache before failing so partial state is preserved
-                let mut lru = self.lru.lock().await;
-                lru.put(session_id.clone(), session);
+                let _ = self.commit_session(session_id, session).await;
                 return Err(err);
             }
         };
-
-        // 4. Persist updated snapshot to cold store
-        let snapshot = session.to_snapshot();
-        self.store.save(&snapshot).await?;
-
-        // 5. Place session back into hot LRU cache, handling eviction if capacity reached
-        let evicted = {
-            let mut lru = self.lru.lock().await;
-            lru.put(session_id.clone(), session)
-        };
-
-        if let Some((evicted_id, evicted_session)) = evicted {
-            info!(session = %evicted_id, "Evicting session from hot cache to cold storage");
-            let evicted_snapshot = evicted_session.to_snapshot();
-            self.store.save(&evicted_snapshot).await?;
-        }
-
+        self.commit_session(session_id, session).await?;
         Ok(result)
     }
 
@@ -121,32 +267,7 @@ impl<B: Backend, S: SessionStore> SessionManager<B, S> {
         options: &CompletionOptions,
         token_tx: tokio::sync::mpsc::UnboundedSender<String>,
     ) -> Result<CompletionResult, Error> {
-        debug!(session = %session_id, "Resolving session for streaming inference");
-
-        // 1. Check hot cache first (remove temporarily while running inference to release LRU lock)
-        let hot_session = {
-            let mut lru = self.lru.lock().await;
-            lru.remove(session_id)
-        };
-
-        let mut session = match hot_session {
-            Some(hot) => hot,
-            None => {
-                debug!(session = %session_id, "Hot cache miss, querying cold storage");
-                match self.store.load(session_id).await? {
-                    Some(snapshot) => {
-                        info!(session = %session_id, "Restored session snapshot from cold storage");
-                        Session::from_snapshot(snapshot)
-                    }
-                    None => {
-                        info!(session = %session_id, "Creating fresh session");
-                        Session::new(session_id.clone(), &self.model_id)
-                    }
-                }
-            }
-        };
-
-        // 3. Execute backend streaming inference with session context
+        let mut session = self.resolve_session(session_id).await?;
         let result = match self
             .backend
             .complete_session_stream(&mut session, prompt, options, token_tx)
@@ -154,90 +275,63 @@ impl<B: Backend, S: SessionStore> SessionManager<B, S> {
         {
             Ok(res) => res,
             Err(err) => {
-                // Re-insert session into cache before failing so partial state is preserved
-                let mut lru = self.lru.lock().await;
-                lru.put(session_id.clone(), session);
+                let _ = self.commit_session(session_id, session).await;
                 return Err(err);
             }
         };
-
-        // 4. Persist updated snapshot to cold store
-        let snapshot = session.to_snapshot();
-        self.store.save(&snapshot).await?;
-
-        // 5. Place session back into hot LRU cache, handling eviction if capacity reached
-        let evicted = {
-            let mut lru = self.lru.lock().await;
-            lru.put(session_id.clone(), session)
-        };
-
-        if let Some((evicted_id, evicted_session)) = evicted {
-            info!(session = %evicted_id, "Evicting session from hot cache to cold storage");
-            let evicted_snapshot = evicted_session.to_snapshot();
-            self.store.save(&evicted_snapshot).await?;
-        }
-
+        self.commit_session(session_id, session).await?;
         Ok(result)
     }
 
-    /// Manually evicts a session from the hot cache to cold storage.
-    pub async fn evict_to_cold(&self, session_id: &SessionId) -> Result<(), Error> {
-        let session = {
-            let mut lru = self.lru.lock().await;
-            lru.remove(session_id)
-        };
-
-        if let Some(session) = session {
-            let snapshot = session.to_snapshot();
-            self.store.save(&snapshot).await?;
-            info!(session = %session_id, "Manually evicted session from hot cache to cold storage");
-        }
-
-        Ok(())
-    }
-
-    /// Retrieves session metadata from hot cache or cold storage.
+    /// Retrieves session metadata from hot cache, warm cache, or cold storage.
     pub async fn get_metadata(
         &self,
         session_id: &SessionId,
     ) -> Result<Option<SessionMetadata>, Error> {
-        {
-            let lru = self.lru.lock().await;
-            if let Some(session) = lru.peek(session_id) {
-                return Ok(Some(session.metadata.clone()));
-            }
+        if let Some(session) = self.hot.lock().await.peek(session_id) {
+            return Ok(Some(session.metadata.clone()));
         }
-
+        if let Some(snapshot) = self.warm.lock().await.peek(session_id) {
+            return Ok(Some(snapshot.metadata.clone()));
+        }
         match self.store.load(session_id).await? {
             Some(snapshot) => Ok(Some(snapshot.metadata)),
             None => Ok(None),
         }
     }
 
-    /// Deletes a session from both hot cache and cold storage.
+    /// Deletes a session from hot cache, warm cache, and cold storage.
     pub async fn delete_session(&self, session_id: &SessionId) -> Result<bool, Error> {
-        let in_hot = {
-            let mut lru = self.lru.lock().await;
-            lru.remove(session_id).is_some()
-        };
-
+        let in_hot = self.hot.lock().await.remove(session_id).is_some();
+        let in_warm = self.warm.lock().await.remove(session_id).is_some();
         let in_cold = self.store.delete(session_id).await?;
-        Ok(in_hot || in_cold)
+        Ok(in_hot || in_warm || in_cold)
     }
 
-    /// Lists metadata for all sessions stored in cold storage.
+    /// Lists metadata for all sessions across cold storage, warm cache, and hot cache.
     pub async fn list_sessions(&self) -> Result<Vec<SessionMetadata>, Error> {
-        let mut cold_list = self.store.list().await?;
-
-        // Update with freshest metadata from hot cache if present
-        let lru = self.lru.lock().await;
-        for meta in &mut cold_list {
-            if let Some(hot_sess) = lru.peek(&meta.id) {
-                *meta = hot_sess.metadata.clone();
+        let mut sessions = self.store.list().await?;
+        {
+            let warm = self.warm.lock().await;
+            for snap in warm.values() {
+                if let Some(pos) = sessions.iter().position(|m| m.id == snap.metadata.id) {
+                    sessions[pos] = snap.metadata.clone();
+                } else {
+                    sessions.push(snap.metadata.clone());
+                }
             }
         }
-
-        Ok(cold_list)
+        {
+            let hot = self.hot.lock().await;
+            for sess in hot.values() {
+                if let Some(pos) = sessions.iter().position(|m| m.id == sess.metadata.id) {
+                    sessions[pos] = sess.metadata.clone();
+                } else {
+                    sessions.push(sess.metadata.clone());
+                }
+            }
+        }
+        Ok(sessions)
     }
 }
 
@@ -255,8 +349,8 @@ mod tests {
         let store = Arc::new(FileSessionStore::new(dir.path()).unwrap());
         let backend = Arc::new(MockBackend::new("mock answer"));
 
-        // Capacity of 1 hot session
-        let manager = SessionManager::new(backend, store.clone(), 1, "test-model");
+        let policy = TierPolicy::new(1, 2, 1024 * 1024, 2 * 1024 * 1024);
+        let manager = SessionManager::with_policy(backend, store.clone(), policy, "test-model");
 
         let sess_a = SessionId::from("sess-a");
         let sess_b = SessionId::from("sess-b");
@@ -267,25 +361,33 @@ mod tests {
             .unwrap();
         assert_eq!(res1.text, "mock answer");
         assert_eq!(manager.hot_session_count().await, 1);
+        assert_eq!(manager.warm_session_count().await, 0);
 
-        // sess_b will evict sess_a from hot cache to cold storage
         let res2 = manager
             .complete(&sess_b, "Hello B", &CompletionOptions::default())
             .await
             .unwrap();
         assert_eq!(res2.text, "mock answer");
         assert_eq!(manager.hot_session_count().await, 1);
+        assert_eq!(manager.warm_session_count().await, 1);
+        assert_eq!(
+            manager.session_tier(&sess_a).await.unwrap(),
+            Some(TierLevel::Warm)
+        );
 
-        // Verify sess_a is saved in cold storage
-        let loaded_a = store.load(&sess_a).await.unwrap();
-        assert!(loaded_a.is_some());
-
-        // Now calling sess_a again should restore it from cold storage
         let res3 = manager
             .complete(&sess_a, "Continue A", &CompletionOptions::default())
             .await
             .unwrap();
         assert_eq!(res3.text, "mock answer");
-        assert_eq!(manager.hot_session_count().await, 1);
+        assert_eq!(
+            manager.session_tier(&sess_a).await.unwrap(),
+            Some(TierLevel::Hot)
+        );
+
+        let metrics = manager.metrics_snapshot().await;
+        assert_eq!(metrics.warm_hits, 1);
+        assert_eq!(metrics.promotions_warm_to_hot, 1);
+        assert_eq!(metrics.demotions_hot_to_warm, 2);
     }
 }

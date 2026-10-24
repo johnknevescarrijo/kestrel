@@ -93,6 +93,9 @@ pub trait SessionStore: Send + Sync {
 pub struct MockBackend {
     fixed_response: String,
     call_count: Arc<AtomicUsize>,
+    kv_bytes_per_token: usize,
+    fixed_kv_size: Option<usize>,
+    attach_handle: bool,
 }
 
 impl MockBackend {
@@ -101,7 +104,28 @@ impl MockBackend {
         Self {
             fixed_response: response.into(),
             call_count: Arc::new(AtomicUsize::new(0)),
+            kv_bytes_per_token: 4,
+            fixed_kv_size: None,
+            attach_handle: true,
         }
+    }
+
+    /// Configures simulated KV cache bytes generated per context token.
+    pub fn with_kv_bytes_per_token(mut self, bytes: usize) -> Self {
+        self.kv_bytes_per_token = bytes;
+        self
+    }
+
+    /// Configures a fixed simulated KV cache footprint in bytes regardless of token count.
+    pub fn with_fixed_kv_size(mut self, bytes: usize) -> Self {
+        self.fixed_kv_size = Some(bytes);
+        self
+    }
+
+    /// Configures whether to attach a mock backend handle (`Arc<()>`) to active sessions.
+    pub fn with_attach_handle(mut self, attach: bool) -> Self {
+        self.attach_handle = attach;
+        self
     }
 
     /// Returns the number of times completion methods were called.
@@ -128,6 +152,10 @@ impl Backend for MockBackend {
         _options: &CompletionOptions,
     ) -> Result<CompletionResult, Error> {
         self.call_count.fetch_add(1, Ordering::SeqCst);
+
+        if self.attach_handle && session.backend_handle.is_none() {
+            session.backend_handle = Some(Arc::new(()));
+        }
 
         let prefill_tokens;
         let generated_tokens = self.fixed_response.split_whitespace().count().max(1);
@@ -158,7 +186,11 @@ impl Backend for MockBackend {
             .flat_map(|&t| t.to_le_bytes())
             .collect();
 
-        session.record_access(session.tokens.len(), session.tokens.len() * 4);
+        let kv_bytes = self
+            .fixed_kv_size
+            .unwrap_or(session.tokens.len() * self.kv_bytes_per_token);
+
+        session.record_access(session.tokens.len(), kv_bytes);
 
         Ok(CompletionResult {
             text: self.fixed_response.clone(),
