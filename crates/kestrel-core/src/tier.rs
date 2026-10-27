@@ -58,6 +58,16 @@ impl TierPolicy {
         }
     }
 
+    /// Checks whether adding `needed` bytes or another item violates hot tier limits.
+    pub fn exceeds_hot(&self, count: usize, current_bytes: usize, needed: usize) -> bool {
+        count >= self.max_hot_sessions || current_bytes + needed > self.hot_budget_bytes
+    }
+
+    /// Checks whether adding `needed` bytes or another item violates warm tier limits.
+    pub fn exceeds_warm(&self, count: usize, current_bytes: usize, needed: usize) -> bool {
+        count >= self.max_warm_sessions || current_bytes + needed > self.warm_budget_bytes
+    }
+
     /// Creates a policy using default capacities and custom byte budgets.
     pub fn with_budgets_bytes(hot_budget_bytes: usize, warm_budget_bytes: usize) -> Self {
         Self {

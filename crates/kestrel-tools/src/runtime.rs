@@ -57,11 +57,14 @@ impl ToolRuntime {
         Self { max_retries }
     }
 
-    /// Executes completion with tool-calling capabilities, retrying with error feedback if output is invalid.
-    pub async fn complete_with_tools<B: Backend, S: SessionStore>(
+    /// Executes completion with tool-calling capabilities and explicit model override,
+    /// retrying with error feedback if output is invalid.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn complete_with_tools_and_model<B: Backend, S: SessionStore>(
         &self,
         manager: &SessionManager<B, S>,
         session_id: &SessionId,
+        model: Option<&str>,
         prompt: &str,
         options: &CompletionOptions,
         tools: &[ToolDefinition],
@@ -84,7 +87,7 @@ impl ToolRuntime {
             );
 
             let res = manager
-                .complete(session_id, &current_prompt, options)
+                .complete_with_model(session_id, model, &current_prompt, options)
                 .await
                 .map_err(ToolError::Core)?;
 
@@ -170,6 +173,101 @@ impl ToolRuntime {
                         });
                     }
                     current_prompt = format_feedback_prompt(&parse_err);
+                }
+            }
+        }
+
+        Err(ToolError::MaxRetriesExceeded {
+            attempts,
+            last_error: last_error_reason,
+        })
+    }
+
+    /// Executes completion with tool-calling capabilities using default model.
+    pub async fn complete_with_tools<B: Backend, S: SessionStore>(
+        &self,
+        manager: &SessionManager<B, S>,
+        session_id: &SessionId,
+        prompt: &str,
+        options: &CompletionOptions,
+        tools: &[ToolDefinition],
+        require_tool: bool,
+    ) -> Result<(ModelOutput, CompletionResult), ToolError> {
+        self.complete_with_tools_and_model(
+            manager,
+            session_id,
+            None,
+            prompt,
+            options,
+            tools,
+            require_tool,
+        )
+        .await
+    }
+
+    /// Executes completion enforcing native structured output format (JSON Mode or JSON Schema),
+    /// retrying with corrective feedback if the output fails validation.
+    pub async fn complete_with_structured_output<B: Backend, S: SessionStore>(
+        &self,
+        manager: &SessionManager<B, S>,
+        session_id: &SessionId,
+        model: Option<&str>,
+        prompt: &str,
+        options: &CompletionOptions,
+        mode: &crate::structured::StructuredOutputMode,
+    ) -> Result<CompletionResult, ToolError> {
+        let max_attempts = 1 + self.max_retries;
+        let mut attempts = 0;
+        let mut total_prefill = 0;
+        let mut total_generated = 0;
+        let mut current_prompt = prompt.to_string();
+        let mut last_error_reason = String::new();
+
+        while attempts < max_attempts {
+            attempts += 1;
+            debug!(
+                session = %session_id,
+                attempt = attempts,
+                max_attempts = max_attempts,
+                "Running completion attempt for structured output"
+            );
+
+            let res = manager
+                .complete_with_model(session_id, model, &current_prompt, options)
+                .await
+                .map_err(ToolError::Core)?;
+
+            total_prefill += res.prefill_tokens;
+            total_generated += res.generated_tokens;
+
+            match crate::structured::extract_and_validate_json(&res.text, mode) {
+                Ok(valid_json) => {
+                    debug!(
+                        session = %session_id,
+                        attempts,
+                        "Successfully validated structured JSON output"
+                    );
+                    return Ok(CompletionResult {
+                        text: valid_json,
+                        prefill_tokens: total_prefill,
+                        generated_tokens: total_generated,
+                    });
+                }
+                Err(val_err) => {
+                    warn!(
+                        session = %session_id,
+                        attempt = attempts,
+                        error = %val_err,
+                        "Structured output validation failed"
+                    );
+                    last_error_reason = val_err.to_string();
+                    if attempts >= max_attempts {
+                        return Err(ToolError::MaxRetriesExceeded {
+                            attempts,
+                            last_error: last_error_reason,
+                        });
+                    }
+                    current_prompt = crate::structured::format_structured_feedback_prompt(&val_err);
                 }
             }
         }

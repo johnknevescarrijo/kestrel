@@ -24,6 +24,7 @@ use kestrel_server::types::{ChatCompletionRequest, ChatCompletionResponse, ChatM
 use kestrel_tools::error::ToolError;
 use kestrel_tools::parser::parse_model_output;
 use kestrel_tools::runtime::ToolRuntime;
+use kestrel_tools::structured::StructuredOutputMode;
 use kestrel_tools::types::{ModelOutput, ToolDefinition};
 use serde_json::{json, Value};
 use tempfile::tempdir;
@@ -879,4 +880,110 @@ async fn test_26_http_chat_completions_tool_choice_none_ignores_tools() {
     assert_eq!(resp.choices[0].finish_reason.as_deref(), Some("stop"));
     assert!(resp.choices[0].message.tool_calls.is_none());
     assert_eq!(resp.choices[0].message.content, "I will not use any tools.");
+}
+
+#[tokio::test]
+async fn test_27_structured_output_json_object_with_retry() {
+    let responses = vec![
+        "This is not JSON at all.".to_string(),
+        "```json\n{\"status\": \"ok\", \"attempt\": 2}\n```".to_string(),
+    ];
+    let backend = Arc::new(SequentialMockBackend::new(responses));
+    let dir = tempdir().unwrap();
+    let store = Arc::new(FileSessionStore::new(dir.path()).unwrap());
+    let manager = Arc::new(SessionManager::new(backend.clone(), store, 4, "mock-qwen"));
+    let runtime = ToolRuntime::default();
+    let sess_id = SessionId::from("sess-struct-1");
+
+    let res = runtime
+        .complete_with_structured_output(
+            &manager,
+            &sess_id,
+            None,
+            "Give me a json status",
+            &CompletionOptions::default(),
+            &StructuredOutputMode::JsonObject,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(backend.call_count(), 2);
+    let parsed: serde_json::Value = serde_json::from_str(&res.text).unwrap();
+    assert_eq!(parsed["status"], "ok");
+    assert_eq!(parsed["attempt"], 2);
+}
+
+#[tokio::test]
+async fn test_28_structured_output_json_schema_validation() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "name": { "type": "string" },
+            "score": { "type": "integer" }
+        },
+        "required": ["name", "score"]
+    });
+
+    let mode = StructuredOutputMode::JsonSchema {
+        name: "PlayerScore".to_string(),
+        description: None,
+        schema,
+        strict: true,
+    };
+
+    let responses = vec![
+        "{\"name\": \"Bob\", \"score\": \"one hundred\"}".to_string(), // type error: string instead of integer
+        "{\"name\": \"Bob\", \"score\": 100}".to_string(),
+    ];
+    let backend = Arc::new(SequentialMockBackend::new(responses));
+    let dir = tempdir().unwrap();
+    let store = Arc::new(FileSessionStore::new(dir.path()).unwrap());
+    let manager = Arc::new(SessionManager::new(backend.clone(), store, 4, "mock-qwen"));
+    let runtime = ToolRuntime::default();
+    let sess_id = SessionId::from("sess-struct-2");
+
+    let res = runtime
+        .complete_with_structured_output(
+            &manager,
+            &sess_id,
+            None,
+            "Give player score",
+            &CompletionOptions::default(),
+            &mode,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(backend.call_count(), 2);
+    let parsed: serde_json::Value = serde_json::from_str(&res.text).unwrap();
+    assert_eq!(parsed["name"], "Bob");
+    assert_eq!(parsed["score"], 100);
+}
+
+#[tokio::test]
+async fn test_29_complete_with_tools_and_model_override() {
+    let tool_call = "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"London\"}}\n</tool_call>";
+    let backend = Arc::new(SequentialMockBackend::new(vec![tool_call.to_string()]));
+    let dir = tempdir().unwrap();
+    let store = Arc::new(FileSessionStore::new(dir.path()).unwrap());
+    let manager = Arc::new(SessionManager::new(backend, store, 4, "default-model"));
+    let runtime = ToolRuntime::default();
+    let sess_id = SessionId::from("sess-model-override");
+
+    let (output, _res) = runtime
+        .complete_with_tools_and_model(
+            &manager,
+            &sess_id,
+            Some("custom-model"),
+            "What is the weather?",
+            &CompletionOptions::default(),
+            &[sample_weather_tool()],
+            true,
+        )
+        .await
+        .unwrap();
+
+    assert!(matches!(output, ModelOutput::ToolCalls(_)));
+    let meta = manager.get_metadata(&sess_id).await.unwrap().unwrap();
+    assert_eq!(meta.model_id, "custom-model");
 }

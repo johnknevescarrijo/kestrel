@@ -8,11 +8,26 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use kestrel_core::traits::{Backend, CompletionOptions};
-use kestrel_core::{FileSessionStore, SessionId, SessionManager, TierPolicy};
-use kestrel_llama::LlamaBackend;
+use kestrel_core::{FileSessionStore, ModelRouter, SessionId, SessionManager, TierPolicy};
+use kestrel_llama::{EngineBackend, LlamaBackend, MlxBackend};
 use kestrel_server::{build_router, AppState};
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+enum BackendKind {
+    Llama,
+    Mlx,
+}
+
+impl std::fmt::Display for BackendKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BackendKind::Llama => write!(f, "llama"),
+            BackendKind::Mlx => write!(f, "mlx"),
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(
@@ -27,7 +42,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Generate a text completion for a prompt using a local GGUF model
+    /// Generate a text completion for a prompt using a local model
     Complete(CompleteArgs),
 
     /// Start an OpenAI-compatible HTTP inference server
@@ -36,9 +51,17 @@ enum Commands {
 
 #[derive(Args)]
 struct ServeArgs {
-    /// Path to the GGUF model file
+    /// Path to the primary model file
     #[arg(short, long, default_value = "./models/qwen2.5-0.5b-q4.gguf")]
     model: PathBuf,
+
+    /// Execution backend engine (llama.cpp or mlx)
+    #[arg(long, value_enum, default_value_t = BackendKind::Llama)]
+    backend: BackendKind,
+
+    /// Additional model paths to register for multi-model routing
+    #[arg(long)]
+    extra_model: Vec<PathBuf>,
 
     /// Port to listen on
     #[arg(short, long, default_value_t = 8080)]
@@ -70,9 +93,13 @@ struct CompleteArgs {
     /// The prompt to complete
     prompt: String,
 
-    /// Path to the GGUF model file
+    /// Path to the model file
     #[arg(short, long, default_value = "./models/qwen2.5-0.5b-q4.gguf")]
     model: PathBuf,
+
+    /// Execution backend engine (llama.cpp or mlx)
+    #[arg(long, value_enum, default_value_t = BackendKind::Llama)]
+    backend: BackendKind,
 
     /// Optional session ID for persistent KV cache and context reuse
     #[arg(short, long)]
@@ -85,6 +112,21 @@ struct CompleteArgs {
     /// Maximum tokens to generate
     #[arg(long, default_value_t = 128)]
     max_tokens: usize,
+}
+
+fn load_engine_backend(kind: BackendKind, path: &std::path::Path) -> Result<EngineBackend> {
+    match kind {
+        BackendKind::Llama => {
+            let b = LlamaBackend::load_from_file(path)
+                .with_context(|| format!("failed to load GGUF model from '{}'", path.display()))?;
+            Ok(EngineBackend::Llama(b))
+        }
+        BackendKind::Mlx => {
+            let b = MlxBackend::load_from_file(path)
+                .with_context(|| format!("failed to load MLX model from '{}'", path.display()))?;
+            Ok(EngineBackend::Mlx(b))
+        }
+    }
 }
 
 #[tokio::main]
@@ -105,9 +147,7 @@ async fn main() -> Result<()> {
                 );
             }
 
-            let backend = LlamaBackend::load_from_file(&args.model).with_context(|| {
-                format!("failed to load GGUF model from '{}'", args.model.display())
-            })?;
+            let backend = load_engine_backend(args.backend, &args.model)?;
 
             let options = CompletionOptions {
                 max_tokens: args.max_tokens,
@@ -159,10 +199,22 @@ async fn main() -> Result<()> {
                 );
             }
 
-            let backend =
-                Arc::new(LlamaBackend::load_from_file(&args.model).with_context(|| {
-                    format!("failed to load GGUF model from '{}'", args.model.display())
-                })?);
+            let default_model_name = extract_model_name(&args.model);
+            let default_backend = Arc::new(load_engine_backend(args.backend, &args.model)?);
+
+            let mut router = ModelRouter::new(&default_model_name, default_backend);
+
+            for extra in &args.extra_model {
+                if !extra.exists() {
+                    anyhow::bail!("Extra model file not found at '{}'.", extra.display());
+                }
+                let extra_name = extract_model_name(extra);
+                let extra_backend = Arc::new(load_engine_backend(args.backend, extra)?);
+                router.register(&extra_name, extra_backend);
+            }
+
+            let model_ids = router.model_ids();
+            let router_backend = Arc::new(router);
 
             let store = Arc::new(FileSessionStore::new(&args.session_dir).with_context(|| {
                 format!(
@@ -170,8 +222,6 @@ async fn main() -> Result<()> {
                     args.session_dir.display()
                 )
             })?);
-
-            let model_name = extract_model_name(&args.model);
 
             let mut policy = TierPolicy::from_env();
             policy.max_hot_sessions = args.hot_capacity;
@@ -183,13 +233,14 @@ async fn main() -> Result<()> {
             }
 
             let manager = Arc::new(SessionManager::with_policy(
-                backend,
+                router_backend,
                 store,
                 policy,
-                &model_name,
+                &default_model_name,
             ));
 
-            let state = Arc::new(AppState::new(manager, &model_name));
+            let state =
+                Arc::new(AppState::new(manager, &default_model_name).with_models(model_ids));
             let router = build_router(state);
 
             let addr = format!("{}:{}", args.host, args.port);

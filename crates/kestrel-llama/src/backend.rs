@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use kestrel_core::session::Session;
-use kestrel_core::traits::{Backend, BatchItem, CompletionOptions, CompletionResult};
+use kestrel_core::traits::{
+    Backend, BatchItem, CompletionOptions, CompletionResult, EmbeddingResult,
+};
 use llama_cpp::standard_sampler::StandardSampler;
 use llama_cpp::{LlamaModel, LlamaParams, LlamaSession, SessionParams};
 use tracing::{debug, info};
@@ -233,12 +235,7 @@ impl Backend for LlamaBackend {
                 })?
                 .into_strings();
 
-            let mut output = String::new();
-            for piece in completions {
-                output.push_str(&piece);
-            }
-
-            Ok(output)
+            Ok(completions.collect())
         })
         .await
         .map_err(|err| LlamaError::TaskJoin {
@@ -328,6 +325,30 @@ impl Backend for LlamaBackend {
     ) -> Result<CompletionResult, kestrel_core::Error> {
         self.execute_session_completion(session, prompt, options, Some(token_tx))
             .await
+    }
+
+    async fn embed(&self, input: &str) -> Result<EmbeddingResult, kestrel_core::Error> {
+        let model = Arc::clone(&self.model);
+        let text = input.to_string();
+        let tokens = tokio::task::spawn_blocking(move || -> Result<Vec<u32>, LlamaError> {
+            let token_objs = model.tokenize_bytes(&text, true, false).map_err(|err| {
+                LlamaError::Tokenization {
+                    reason: format!("{err:?}"),
+                }
+            })?;
+            Ok(token_objs.into_iter().map(|t| t.0 as u32).collect())
+        })
+        .await
+        .map_err(|err| LlamaError::TaskJoin {
+            reason: err.to_string(),
+        })??;
+
+        let prompt_tokens = tokens.len().max(1);
+        let embedding = crate::restore::compute_token_embedding(&tokens, 64);
+        Ok(EmbeddingResult {
+            embedding,
+            prompt_tokens,
+        })
     }
 }
 

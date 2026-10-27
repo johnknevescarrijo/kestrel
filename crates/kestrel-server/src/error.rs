@@ -96,6 +96,12 @@ impl IntoResponse for ServerError {
                 "invalid_session_id",
                 format!("invalid session id '{id}': {reason}"),
             ),
+            ServerError::Core(kestrel_core::Error::ModelNotFound { model, available }) => (
+                StatusCode::NOT_FOUND,
+                "not_found_error",
+                "model_not_found",
+                format!("model '{model}' not found; available models: {available:?}"),
+            ),
             ServerError::Core(err) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "api_error",
