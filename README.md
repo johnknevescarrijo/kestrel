@@ -310,6 +310,83 @@ When the model generates a valid tool invocation, Kestrel returns `finish_reason
 
 > 🔁 **Automatic Self-Correction (Retry Loop):** If the model outputs malformed JSON or parameters violating the schema, Kestrel captures the validation error against `jsonschema`, injects a corrective feedback prompt explaining the error, and prompts the model to regenerate the response (up to the configured retry limit, default: 3).
 
+### 5. Native Structured Output (JSON Mode & JSON Schema)
+
+Kestrel natively supports guaranteed structured output conforming to arbitrary JSON Schemas or raw JSON objects via the standard OpenAI `response_format` parameter:
+
+```bash
+# Enforce strict JSON Schema compliance
+curl -s http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen2.5-0.5b-q4.gguf",
+    "messages": [
+      {"role": "user", "content": "Extract the person: Alice is 30 years old and lives in Berlin."}
+    ],
+    "response_format": {
+      "type": "json_schema",
+      "json_schema": {
+        "name": "person_info",
+        "strict": true,
+        "schema": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "age": { "type": "integer" },
+            "city": { "type": "string" }
+          },
+          "required": ["name", "age", "city"],
+          "additionalProperties": false
+        }
+      }
+    }
+  }'
+```
+
+```bash
+# Raw JSON mode
+curl -s http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen2.5-0.5b-q4.gguf",
+    "messages": [{"role": "user", "content": "Return a JSON map with 3 colors and hex codes"}],
+    "response_format": { "type": "json_object" }
+  }'
+```
+
+### 6. Vector Embeddings (`POST /v1/embeddings`)
+
+Generate dense vector embeddings with optional dimension overrides and L2 normalization:
+
+```bash
+curl -s http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen2.5-0.5b-q4.gguf",
+    "input": ["Local semantic search vector", "Document retrieval"],
+    "dimensions": 64
+  }'
+```
+
+### 7. Multi-Model Routing & Apple Silicon MLX Backend
+
+Serve multiple models simultaneously and choose between `llama.cpp` or Apple Silicon `mlx` backends:
+
+```bash
+# Serve primary model with extra models registered in ModelRouter
+kestrel serve \
+  --model ./models/qwen2.5-0.5b-q4.gguf \
+  --extra-model ./models/llama-3.2-1b.gguf \
+  --backend llama \
+  --port 8080
+
+# On Apple Silicon (macOS) using native MLX:
+kestrel serve \
+  --model ./models/qwen2.5-mlx \
+  --backend mlx \
+  --port 8080
+```
+
 ---
 
 ## 🛠️ Admin & Observability Endpoints
@@ -417,7 +494,9 @@ Kestrel resolves the session identifier in the following precedence order:
 
 ```
 Options:
-  -m, --model <PATH>             Path to GGUF file [default: ./models/qwen2.5-0.5b-q4.gguf]
+  -m, --model <PATH>             Path to primary model file [default: ./models/qwen2.5-0.5b-q4.gguf]
+      --backend <llama|mlx>      Backend inference engine [default: llama]
+      --extra-model <PATH>...    Additional model paths to register for multi-model routing
   -p, --port <PORT>              TCP port for the server [default: 8080]
       --host <HOST>              Bind IP address [default: 0.0.0.0]
       --session-dir <DIR>        Directory for Cold snapshots [default: ./.kestrel/sessions]
@@ -460,11 +539,11 @@ cargo bench -p kestrel-core
 - [x] **M5 — Concurrency & Batching**: Continuous micro-batching via `BatchScheduler` supporting concurrent hot sessions and 50+ simultaneous clients.
 - [x] **Single Cross-Platform Binary**: Cross-platform single binary (`kestrel` / `kestrel.exe`) tested on Linux, macOS, and Windows with graceful shutdown.
 
-### Post-v1.0 (Next Steps Backlog)
-- [ ] **MLX Backend Support** (Apple Silicon unified memory optimization)
-- [ ] **Embeddings Endpoint** (`/v1/embeddings`)
-- [ ] **Native Structured Output** (JSON mode / strict JSON Schema response format)
-- [ ] **Multi-Model Routing** (per-session model routing)
+### Post-v1.0 (Backlog Features)
+- [x] **MLX Backend Support** (Apple Silicon unified memory optimization)
+- [x] **Embeddings Endpoint** (`/v1/embeddings`)
+- [x] **Native Structured Output** (JSON mode / strict JSON Schema response format)
+- [x] **Multi-Model Routing** (per-session model routing)
 
 ---
 

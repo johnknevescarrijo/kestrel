@@ -320,10 +320,10 @@ anterior.**
 - **Aceite:** throughput >= 2x M4 em benchmark padrão. (Concluído)
 
 ### Pós-v1.0 (backlog)
-- Suporte a MLX (Apple Silicon).
-- Embeddings endpoint.
-- Structured output (JSON mode) nativo.
-- Multi-modelo (roteamento por sessão).
+- [x] Suporte a MLX (Apple Silicon).
+- [x] Embeddings endpoint.
+- [x] Structured output (JSON mode) nativo.
+- [x] Multi-modelo (roteamento por sessão).
 
 ---
 
