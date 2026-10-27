@@ -43,6 +43,9 @@ jobs:
       - name: Run clippy linter
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
       - name: Run test suite
         run: cargo test --workspace
 

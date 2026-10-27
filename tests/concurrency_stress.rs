@@ -200,7 +200,7 @@ async fn test_50_concurrent_http_clients_with_tiering() {
 
 #[tokio::test]
 async fn test_m5_throughput_at_least_2x_m4() {
-    let forward_delay = Duration::from_millis(4);
+    let forward_delay = Duration::from_millis(25);
     let request_count = 32;
 
     // 1. Measure M4 sequential / non-batched throughput

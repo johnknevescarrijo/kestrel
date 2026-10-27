@@ -44,37 +44,56 @@ async fn test_official_python_openai_contract() {
         .canonicalize()
         .expect("Failed to find test-openai-contract.py");
 
-    // Run Python official client test script using `uv run --with openai`
-    let mut cmd = Command::new("uv");
-    cmd.args([
-        "run",
-        "--with",
-        "openai",
-        "python3",
-        script_path.to_str().expect("valid utf8 path"),
-        "--port",
-        &port.to_string(),
-        "--model",
-        model_name,
-    ]);
+    let python_bin = if cfg!(windows) { "python" } else { "python3" };
+    let uv_available = Command::new("uv")
+        .arg("--version")
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false);
 
-    let output = match cmd.output().await {
-        Ok(out) => out,
-        Err(_) => {
-            // Fallback to direct python3 if uv is not in PATH
-            let mut direct = Command::new("python3");
-            direct.args([
-                script_path.to_str().expect("valid utf8 path"),
-                "--port",
-                &port.to_string(),
-                "--model",
-                model_name,
-            ]);
-            direct
-                .output()
-                .await
-                .expect("Failed to execute python contract script")
+    let output = if uv_available {
+        let mut cmd = Command::new("uv");
+        cmd.args([
+            "run",
+            "--with",
+            "openai",
+            python_bin,
+            script_path.to_str().expect("valid utf8 path"),
+            "--port",
+            &port.to_string(),
+            "--model",
+            model_name,
+        ]);
+        cmd.output()
+            .await
+            .expect("Failed to execute uv contract script")
+    } else {
+        let has_openai = Command::new(python_bin)
+            .args(["-c", "import openai"])
+            .output()
+            .await
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        if !has_openai {
+            println!("Skipping Python OpenAI contract external script because neither 'uv' nor 'python openai' package is installed in this environment");
+            server_handle.abort();
+            return;
         }
+
+        let mut direct = Command::new(python_bin);
+        direct.args([
+            script_path.to_str().expect("valid utf8 path"),
+            "--port",
+            &port.to_string(),
+            "--model",
+            model_name,
+        ]);
+        direct
+            .output()
+            .await
+            .expect("Failed to execute python contract script")
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
