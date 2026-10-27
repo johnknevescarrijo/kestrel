@@ -75,6 +75,7 @@ impl BatchMetricsCounters {
 
 struct BatchRequest {
     session_id: SessionId,
+    model: Option<String>,
     prompt: String,
     options: CompletionOptions,
     response_tx: oneshot::Sender<Result<CompletionResult, Error>>,
@@ -106,16 +107,18 @@ impl<B: Backend + 'static, S: SessionStore + 'static> BatchScheduler<B, S> {
         }
     }
 
-    /// Submits a request for scheduled batch completion.
-    pub async fn submit(
+    /// Submits a request for scheduled batch completion targeting an optional model override.
+    pub async fn submit_with_model(
         &self,
         session_id: SessionId,
+        model: Option<String>,
         prompt: String,
         options: CompletionOptions,
     ) -> Result<CompletionResult, Error> {
         let (response_tx, response_rx) = oneshot::channel();
         let req = BatchRequest {
             session_id,
+            model,
             prompt,
             options,
             response_tx,
@@ -128,6 +131,17 @@ impl<B: Backend + 'static, S: SessionStore + 'static> BatchScheduler<B, S> {
         response_rx.await.map_err(|_| Error::Internal {
             reason: "batch scheduler worker dropped response channel".to_string(),
         })?
+    }
+
+    /// Submits a request for scheduled batch completion.
+    pub async fn submit(
+        &self,
+        session_id: SessionId,
+        prompt: String,
+        options: CompletionOptions,
+    ) -> Result<CompletionResult, Error> {
+        self.submit_with_model(session_id, None, prompt, options)
+            .await
     }
 
     /// Returns a point-in-time metrics snapshot of scheduler batching performance.
@@ -196,12 +210,20 @@ async fn run_scheduler_loop<B: Backend + 'static, S: SessionStore + 'static>(
             .max_observed_batch_size
             .fetch_max(batch_size, Ordering::SeqCst);
 
-        let batch_requests: Vec<(SessionId, String, CompletionOptions)> = current_batch
-            .iter()
-            .map(|r| (r.session_id.clone(), r.prompt.clone(), r.options.clone()))
-            .collect();
+        let batch_requests: Vec<(SessionId, Option<String>, String, CompletionOptions)> =
+            current_batch
+                .iter()
+                .map(|r| {
+                    (
+                        r.session_id.clone(),
+                        r.model.clone(),
+                        r.prompt.clone(),
+                        r.options.clone(),
+                    )
+                })
+                .collect();
 
-        match manager.complete_batch(&batch_requests).await {
+        match manager.complete_batch_with_models(&batch_requests).await {
             Ok(results) => {
                 for (req, res) in current_batch.into_iter().zip(results) {
                     let _ = req.response_tx.send(Ok(res));

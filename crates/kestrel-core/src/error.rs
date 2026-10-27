@@ -53,6 +53,15 @@ pub enum Error {
         reason: String,
     },
 
+    /// Requested model was not found in the router registry.
+    #[error("model '{model}' not found; available models: {available:?}. Specify a registered model identifier.")]
+    ModelNotFound {
+        /// Requested model name.
+        model: String,
+        /// List of registered model names.
+        available: Vec<String>,
+    },
+
     /// An internal or unexpected task failure.
     #[error("internal runtime error: {reason}. Please check server logs for details.")]
     Internal {

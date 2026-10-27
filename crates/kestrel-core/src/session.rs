@@ -156,6 +156,19 @@ impl Session {
         self.metadata.total_tokens = total_tokens;
         self.metadata.kv_size_bytes = kv_size_bytes;
     }
+
+    /// Resets cached KV state and context text when switching to a different model.
+    pub fn reset_for_model(&mut self, new_model: &str) {
+        if self.metadata.model_id != new_model {
+            self.context_text.clear();
+            self.tokens.clear();
+            self.kv_state.clear();
+            self.backend_handle = None;
+            self.metadata.total_tokens = 0;
+            self.metadata.kv_size_bytes = 0;
+            self.metadata.model_id = new_model.to_string();
+        }
+    }
 }
 
 fn current_epoch_ms() -> u64 {
