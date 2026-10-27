@@ -1,7 +1,7 @@
 //! OpenAI-compatible API types and Kestrel session management types.
 
 use kestrel_core::session::SessionMetadata;
-use kestrel_tools::{format_tools_prompt, OpenAiToolCall, ToolDefinition};
+use kestrel_tools::{OpenAiToolCall, ToolDefinition};
 use serde::{Deserialize, Serialize};
 
 /// Represents a single model descriptor in OpenAI models listing.
@@ -48,17 +48,14 @@ impl ChatMessage {
             tool_calls: None,
         }
     }
-
     /// Constructs a user message.
     pub fn user(content: impl Into<String>) -> Self {
         Self::new("user", content)
     }
-
     /// Constructs a system message.
     pub fn system(content: impl Into<String>) -> Self {
         Self::new("system", content)
     }
-
     /// Constructs an assistant message.
     pub fn assistant(content: impl Into<String>) -> Self {
         Self::new("assistant", content)
@@ -73,6 +70,33 @@ impl Default for ChatMessage {
             tool_calls: None,
         }
     }
+}
+
+/// Response format specification for structured output (JSON mode or JSON Schema).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResponseFormat {
+    /// Format type: "text", "json_object", or "json_schema".
+    #[serde(rename = "type")]
+    pub format_type: String,
+    /// Optional JSON Schema configuration when type is "json_schema".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub json_schema: Option<JsonSchemaConfig>,
+}
+
+/// JSON Schema configuration for structured output.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JsonSchemaConfig {
+    /// Schema identifier name.
+    pub name: String,
+    /// Optional description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Raw JSON Schema definition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<serde_json::Value>,
+    /// Whether strict validation is requested.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict: Option<bool>,
 }
 
 /// Request body for `POST /v1/chat/completions`.
@@ -106,6 +130,9 @@ pub struct ChatCompletionRequest {
     /// Override for maximum tool retries upon validation failure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tool_retries: Option<usize>,
+    /// Optional response format for structured output ("text", "json_object", "json_schema").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<ResponseFormat>,
 }
 
 impl Default for ChatCompletionRequest {
@@ -121,48 +148,71 @@ impl Default for ChatCompletionRequest {
             tools: None,
             tool_choice: None,
             max_tool_retries: None,
+            response_format: None,
         }
     }
 }
 
-/// Formats a series of chat messages into a ChatML prompt template.
-pub fn format_chatml_prompt(messages: &[ChatMessage]) -> String {
-    format_chatml_prompt_with_tools(messages, None)
+pub use crate::prompt::{
+    format_chatml_prompt, format_chatml_prompt_with_structured, format_chatml_prompt_with_tools,
+};
+
+/// Input payload for `POST /v1/embeddings` (single string or array of strings).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum EmbeddingInput {
+    /// Single text string.
+    Single(String),
+    /// Batch of text strings.
+    Multiple(Vec<String>),
 }
 
-/// Formats chat messages and optionally injects tool definitions into the ChatML prompt.
-pub fn format_chatml_prompt_with_tools(
-    messages: &[ChatMessage],
-    tools: Option<&[ToolDefinition]>,
-) -> String {
-    let mut prompt = String::new();
-    let has_system = messages.iter().any(|m| m.role == "system");
+/// Request body for `POST /v1/embeddings`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EmbeddingRequest {
+    /// Target model identifier.
+    pub model: String,
+    /// Input text(s) to embed.
+    pub input: EmbeddingInput,
+    /// Optional encoding format ("float" by default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoding_format: Option<String>,
+    /// Optional output vector dimension override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dimensions: Option<usize>,
+}
 
-    if let Some(tool_list) = tools {
-        if !tool_list.is_empty() && !has_system {
-            prompt.push_str("<|im_start|>system\n");
-            prompt.push_str(&format_tools_prompt(tool_list));
-            prompt.push_str("<|im_end|>\n");
-        }
-    }
+/// Single embedding vector entry in response.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EmbeddingObject {
+    /// Object type, fixed to "embedding".
+    pub object: String,
+    /// Floating-point embedding vector.
+    pub embedding: Vec<f32>,
+    /// Position index in the input list.
+    pub index: usize,
+}
 
-    for msg in messages {
-        prompt.push_str("<|im_start|>");
-        prompt.push_str(&msg.role);
-        prompt.push('\n');
-        prompt.push_str(&msg.content);
-        if msg.role == "system" {
-            if let Some(tool_list) = tools {
-                if !tool_list.is_empty() {
-                    prompt.push_str("\n\n");
-                    prompt.push_str(&format_tools_prompt(tool_list));
-                }
-            }
-        }
-        prompt.push_str("<|im_end|>\n");
-    }
-    prompt.push_str("<|im_start|>assistant\n");
-    prompt
+/// Token usage statistics for an embedding request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmbeddingUsage {
+    /// Number of prompt tokens processed.
+    pub prompt_tokens: usize,
+    /// Total tokens processed.
+    pub total_tokens: usize,
+}
+
+/// Response returned by `POST /v1/embeddings`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EmbeddingResponse {
+    /// Object type, fixed to "list".
+    pub object: String,
+    /// List of generated embedding objects.
+    pub data: Vec<EmbeddingObject>,
+    /// Model used for generating embeddings.
+    pub model: String,
+    /// Token usage statistics.
+    pub usage: EmbeddingUsage,
 }
 
 /// Token usage metrics for a completion request.

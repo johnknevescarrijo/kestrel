@@ -2,9 +2,12 @@
 
 //! HTTP server layer for Kestrel, providing OpenAI-compatible endpoints.
 
+pub mod embedding_handlers;
 pub mod error;
 pub mod handlers;
+pub mod prompt;
 pub mod session_handlers;
+pub mod streaming;
 pub mod types;
 
 use std::sync::Arc;
@@ -66,6 +69,10 @@ pub fn build_router<B: Backend + 'static, S: SessionStore + 'static>(
         .route(
             "/v1/chat/completions",
             post(handlers::chat_completions::<B, S>),
+        )
+        .route(
+            "/v1/embeddings",
+            post(embedding_handlers::embeddings::<B, S>),
         )
         // Kestrel extensions
         .route("/kestrel/metrics", get(handlers::get_metrics::<B, S>))
