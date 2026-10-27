@@ -280,13 +280,21 @@ pub struct DeleteSessionResponse {
     pub deleted: bool,
 }
 
-/// Validates that a session ID string only contains permitted characters.
+/// Validates that a session ID string only contains permitted characters and is not a Windows reserved name.
 pub fn validate_and_create_session_id(
     id: &str,
 ) -> Result<kestrel_core::session::SessionId, crate::error::ServerError> {
     if id.is_empty() {
         return Err(crate::error::ServerError::BadRequest {
             reason: "session ID cannot be empty".to_string(),
+        });
+    }
+
+    if kestrel_core::is_windows_reserved_name(id) {
+        return Err(crate::error::ServerError::BadRequest {
+            reason: format!(
+                "invalid session id '{id}': Windows reserved device names (CON, PRN, AUX, NUL, COM1-9, LPT1-9) are not permitted"
+            ),
         });
     }
 
@@ -318,5 +326,17 @@ mod tests {
         let prompt = format_chatml_prompt(&messages);
         let expected = "<|im_start|>system\nYou are helpful.<|im_end|>\n<|im_start|>user\nHello!<|im_end|>\n<|im_start|>assistant\n";
         assert_eq!(prompt, expected);
+    }
+
+    #[test]
+    fn test_validate_and_create_session_id() {
+        assert!(validate_and_create_session_id("my-session_123").is_ok());
+        assert!(validate_and_create_session_id("").is_err());
+        assert!(validate_and_create_session_id("CON").is_err());
+        assert!(validate_and_create_session_id("aux").is_err());
+        assert!(validate_and_create_session_id("nul").is_err());
+        assert!(validate_and_create_session_id("com1").is_err());
+        assert!(validate_and_create_session_id("lpt9").is_err());
+        assert!(validate_and_create_session_id("invalid/id").is_err());
     }
 }

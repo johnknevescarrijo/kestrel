@@ -122,13 +122,9 @@ async fn main() -> Result<()> {
                         )
                     })?);
 
-                let model_name = args
-                    .model
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("default-model");
+                let model_name = extract_model_name(&args.model);
 
-                let manager = SessionManager::new(Arc::new(backend), store, 8, model_name);
+                let manager = SessionManager::new(Arc::new(backend), store, 8, &model_name);
                 let sess_id = SessionId::from(session_id);
 
                 let result = manager
@@ -175,11 +171,7 @@ async fn main() -> Result<()> {
                 )
             })?);
 
-            let model_name = args
-                .model
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("default-model");
+            let model_name = extract_model_name(&args.model);
 
             let mut policy = TierPolicy::from_env();
             policy.max_hot_sessions = args.hot_capacity;
@@ -191,10 +183,13 @@ async fn main() -> Result<()> {
             }
 
             let manager = Arc::new(SessionManager::with_policy(
-                backend, store, policy, model_name,
+                backend,
+                store,
+                policy,
+                &model_name,
             ));
 
-            let state = Arc::new(AppState::new(manager, model_name));
+            let state = Arc::new(AppState::new(manager, &model_name));
             let router = build_router(state);
 
             let addr = format!("{}:{}", args.host, args.port);
@@ -204,10 +199,30 @@ async fn main() -> Result<()> {
 
             info!("Kestrel OpenAI HTTP server running at http://{addr}");
             axum::serve(listener, router)
+                .with_graceful_shutdown(shutdown_signal())
                 .await
                 .with_context(|| "HTTP server runtime encountered an error")?;
         }
     }
 
     Ok(())
+}
+
+/// Extracts the model name from a path in a cross-platform manner,
+/// normalizing both Unix ('/') and Windows ('\') directory separators.
+fn extract_model_name(path: &std::path::Path) -> String {
+    let path_str = path.to_string_lossy();
+    path_str
+        .split(['/', '\\'])
+        .rfind(|part| !part.is_empty())
+        .unwrap_or("default-model")
+        .to_string()
+}
+
+/// Listens for a CTRL+C signal across platforms (Linux, macOS, Windows) for graceful server shutdown.
+async fn shutdown_signal() {
+    tokio::signal::ctrl_c()
+        .await
+        .expect("failed to install CTRL+C signal handler");
+    info!("Shutdown signal received, shutting down gracefully...");
 }

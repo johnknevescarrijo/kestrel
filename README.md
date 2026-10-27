@@ -79,14 +79,23 @@ We provide a helper script to download **Qwen2.5-0.5B-Instruct (Q4_K_M GGUF)** (
 ```
 The model will be saved to `./models/qwen2.5-0.5b-q4.gguf`.
 
-### 3. Build the Project
+### 3. Build the Project (Cross-Platform)
+
+Kestrel compiles into a single, self-contained binary across **Linux**, **macOS**, and **Windows**:
 
 ```bash
-# Build release binary
+# Build release binary (native target)
 cargo build --release -p kestrel-cli
 
-# The executable will be available at target/release/kestrel
+# The executable will be available at:
+# - Linux / macOS: target/release/kestrel
+# - Windows:       target/release/kestrel.exe
 ```
+
+#### Cross-Platform Support
+- **Linux:** Tested on `x86_64-unknown-linux-gnu` with GCC/Clang and CMake.
+- **macOS:** Tested on Apple Silicon (`aarch64-apple-darwin`) with Xcode Command Line Tools.
+- **Windows:** Tested on `x86_64-pc-windows-msvc` with MSVC and CMake. Graceful shutdown (`CTRL+C`), directory separator normalization (`/` and `\`), atomic session persistence, and Windows reserved device name validation (`CON`, `PRN`, `AUX`, `NUL`, etc.) are built-in.
 
 ---
 
@@ -437,6 +446,25 @@ cargo test --test concurrency_stress -- --ignored
 # 4. Benchmark session latency and KV cache prefix reuse (Criterion)
 cargo bench -p kestrel-core
 ```
+
+---
+
+## 🗺️ Roadmap & Next Steps
+
+### Completed Milestones (v1.0)
+- [x] **M0 — Hello, llama**: Baseline GGUF inference via `llama.cpp` bindings and basic CLI completion.
+- [x] **M1 — Persistent Sessions**: Stateful `SessionId`, persistent KV cache save/load on disk, prefix reuse verification.
+- [x] **M2 — OpenAI-Compatible API**: Drop-in `/v1/chat/completions` (JSON and SSE) and `/v1/models` endpoints, plus `/kestrel/sessions` management.
+- [x] **M3 — Resilient Tool Calling**: Robust tool call parsing, strict JSON Schema validation (`jsonschema`), and automatic model self-correction retry loop.
+- [x] **M4 — Tiered KV Cache**: Three-tier storage hierarchy (**Hot** in VRAM, **Warm** in RAM, **Cold** on disk) governed by configurable budgets and LRU promotion/demotion.
+- [x] **M5 — Concurrency & Batching**: Continuous micro-batching via `BatchScheduler` supporting concurrent hot sessions and 50+ simultaneous clients.
+- [x] **Single Cross-Platform Binary**: Cross-platform single binary (`kestrel` / `kestrel.exe`) tested on Linux, macOS, and Windows with graceful shutdown.
+
+### Post-v1.0 (Next Steps Backlog)
+- [ ] **MLX Backend Support** (Apple Silicon unified memory optimization)
+- [ ] **Embeddings Endpoint** (`/v1/embeddings`)
+- [ ] **Native Structured Output** (JSON mode / strict JSON Schema response format)
+- [ ] **Multi-Model Routing** (per-session model routing)
 
 ---
 

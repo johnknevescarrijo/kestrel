@@ -34,7 +34,7 @@ modelos. É a *engine* que agentes (CLIs, SDKs) consomem.
 
 - [x] Suporte a modelos GGUF via `llama.cpp`.
 - [x] Observabilidade via `tracing` (spans por requisição e por sessão).
-- [ ] Binário único, multiplataforma (Linux, macOS, Windows).
+- [x] Binário único, multiplataforma (Linux, macOS, Windows).
 
 ### Não-Objetivos (v1.0)
 - Multi-GPU / tensor parallelism.

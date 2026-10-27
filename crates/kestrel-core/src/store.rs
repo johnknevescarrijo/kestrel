@@ -48,12 +48,49 @@ impl FileSessionStore {
     }
 }
 
-/// Validates that a session ID does not contain path traversal characters.
+/// Checks if a session ID matches any reserved Windows device filename.
+pub fn is_windows_reserved_name(id: &str) -> bool {
+    let upper = id.to_ascii_uppercase();
+    matches!(
+        upper.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    )
+}
+
+/// Validates that a session ID does not contain path traversal characters or Windows reserved device names.
 fn validate_session_id(id: &str) -> Result<(), Error> {
     if id.is_empty() {
         return Err(Error::InvalidSessionId {
             id: id.to_string(),
             reason: "session ID cannot be empty".to_string(),
+        });
+    }
+
+    if is_windows_reserved_name(id) {
+        return Err(Error::InvalidSessionId {
+            id: id.to_string(),
+            reason: "session ID cannot use Windows reserved device names".to_string(),
         });
     }
 
@@ -107,10 +144,29 @@ impl SessionStore for FileSessionStore {
                 reason: format!("failed to sync temporary file: {err}"),
             })?;
 
-            fs::rename(&temp_path, &target_path).map_err(|err| Error::SessionStorageFailed {
-                path: target_path.display().to_string(),
-                reason: format!("failed to rename temporary file to target: {err}"),
-            })?;
+            #[cfg(windows)]
+            if target_path.exists() {
+                let _ = fs::remove_file(&target_path);
+            }
+
+            if let Err(err) = fs::rename(&temp_path, &target_path) {
+                if target_path.exists() {
+                    let _ = fs::remove_file(&target_path);
+                    fs::rename(&temp_path, &target_path).map_err(|retry_err| {
+                        Error::SessionStorageFailed {
+                            path: target_path.display().to_string(),
+                            reason: format!(
+                                "failed to rename temporary file to target: {retry_err}"
+                            ),
+                        }
+                    })?;
+                } else {
+                    return Err(Error::SessionStorageFailed {
+                        path: target_path.display().to_string(),
+                        reason: format!("failed to rename temporary file to target: {err}"),
+                    });
+                }
+            }
 
             debug!(path = %target_path.display(), "Session snapshot saved successfully");
             Ok(())
@@ -269,5 +325,25 @@ mod tests {
         assert!(validate_session_id("foo/bar").is_err());
         assert!(validate_session_id("foo\\bar").is_err());
         assert!(validate_session_id("null\0byte").is_err());
+    }
+
+    #[test]
+    fn test_validate_session_id_windows_reserved_names() {
+        assert!(is_windows_reserved_name("CON"));
+        assert!(is_windows_reserved_name("con"));
+        assert!(is_windows_reserved_name("Prn"));
+        assert!(is_windows_reserved_name("aux"));
+        assert!(is_windows_reserved_name("NUL"));
+        assert!(is_windows_reserved_name("com1"));
+        assert!(is_windows_reserved_name("COM9"));
+        assert!(is_windows_reserved_name("lpt1"));
+        assert!(is_windows_reserved_name("LPT9"));
+        assert!(!is_windows_reserved_name("CONSOLE"));
+        assert!(!is_windows_reserved_name("normal_session"));
+
+        assert!(validate_session_id("CON").is_err());
+        assert!(validate_session_id("aux").is_err());
+        assert!(validate_session_id("com5").is_err());
+        assert!(validate_session_id("lpt2").is_err());
     }
 }
