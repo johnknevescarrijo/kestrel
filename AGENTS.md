@@ -320,7 +320,7 @@ anterior.**
 - **Aceite:** throughput >= 2x M4 em benchmark padrão. (Concluído)
 
 ### Pós-v1.0 (backlog)
-- [x] Suporte a MLX (Apple Silicon).
+- [ ] Suporte a MLX (Apple Silicon) — abstração `MlxBackend`/`EngineBackend` implementada; `load_from_file` falha explicitamente fora de Apple Silicon (`macOS aarch64`) ou sem bindings nativos vinculados (`with_simulated_response` restrito a testes).
 - [x] Embeddings endpoint.
 - [x] Structured output (JSON mode) nativo.
 - [x] Multi-modelo (roteamento por sessão).
