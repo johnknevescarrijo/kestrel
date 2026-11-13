@@ -1,6 +1,6 @@
 #![deny(unsafe_code)]
 
-//! Apple Silicon MLX backend with unified memory management and cross-platform compatibility.
+//! Apple Silicon MLX backend abstraction and explicit test simulation support.
 
 use std::any::Any;
 use std::path::{Path, PathBuf};
@@ -24,8 +24,11 @@ pub struct MlxSessionHandle {
     pub unified_memory_bytes: usize,
 }
 
-/// MLX engine backend providing optimized execution on Apple Silicon with unified memory,
-/// and fallback compatibility across non-Darwin / x86 architectures.
+/// MLX engine backend abstraction for Apple Silicon (`macOS aarch64`).
+///
+/// Native MLX runtime bindings are not linked in this build, so [`MlxBackend::load_from_file`]
+/// fails explicitly instead of silently simulating inference. Use
+/// [`MlxBackend::with_simulated_response`] only in tests that exercise routing or session state.
 #[derive(Debug, Clone)]
 pub struct MlxBackend {
     model_path: PathBuf,
@@ -33,22 +36,39 @@ pub struct MlxBackend {
 }
 
 impl MlxBackend {
-    /// Loads an MLX model directory or GGUF weight file from disk, verifying its existence.
+    /// Loads an MLX model directory or weight file from disk.
+    ///
+    /// Validates that `path` exists, requires Apple Silicon (`macOS aarch64`), and requires
+    /// native MLX runtime bindings. Because native MLX bindings are not linked in this build,
+    /// this method returns an explicit [`LlamaError::LoadModel`] error rather than simulating
+    /// inference.
     pub fn load_from_file(path: impl AsRef<Path>) -> Result<Self, LlamaError> {
         let path_buf = path.as_ref().to_path_buf();
+        let path_display = path_buf.display().to_string();
         if !path_buf.exists() {
             return Err(LlamaError::LoadModel {
-                path: path_buf.display().to_string(),
+                path: path_display,
                 reason: "model path does not exist on disk".to_string(),
             });
         }
-        Ok(Self {
-            model_path: path_buf,
-            default_response: None,
+        if !Self::is_apple_silicon() {
+            return Err(LlamaError::LoadModel {
+                path: path_display,
+                reason: "MLX backend requires Apple Silicon (macOS aarch64); use `--backend llama` on this platform".to_string(),
+            });
+        }
+        Err(LlamaError::LoadModel {
+            path: path_display,
+            reason:
+                "native MLX runtime bindings are not linked in this build; use `--backend llama`"
+                    .to_string(),
         })
     }
 
-    /// Creates an MLX backend with a simulated response (for testing purposes).
+    /// Creates a simulated MLX backend for testing purposes only.
+    ///
+    /// Instances created with this constructor return the configured `response` for completions
+    /// and deterministic embeddings for [`Backend::embed`]. Do not use in production code.
     pub fn with_simulated_response(path: impl AsRef<Path>, response: impl Into<String>) -> Self {
         Self {
             model_path: path.as_ref().to_path_buf(),
@@ -66,11 +86,14 @@ impl MlxBackend {
         &self.model_path
     }
 
-    fn generate_text(&self, prompt: &str) -> String {
+    fn generate_text(&self) -> Result<String, CoreError> {
         if let Some(ref resp) = self.default_response {
-            resp.clone()
+            Ok(resp.clone())
         } else {
-            format!("MLX response for prompt: {prompt}")
+            Err(LlamaError::Completion {
+                reason: "MLX runtime is unavailable in this build and no simulated test response was configured; use `--backend llama`".to_string(),
+            }
+            .into())
         }
     }
 }
@@ -79,10 +102,10 @@ impl MlxBackend {
 impl Backend for MlxBackend {
     async fn complete_with_options(
         &self,
-        prompt: &str,
+        _prompt: &str,
         _options: &CompletionOptions,
     ) -> Result<String, CoreError> {
-        Ok(self.generate_text(prompt))
+        self.generate_text()
     }
 
     async fn complete_session(
@@ -91,6 +114,8 @@ impl Backend for MlxBackend {
         prompt: &str,
         _options: &CompletionOptions,
     ) -> Result<CompletionResult, CoreError> {
+        let response_text = self.generate_text()?;
+
         if session.backend_handle.is_none() {
             session.backend_handle = Some(Arc::new(MlxSessionHandle {
                 unified_memory_bytes: 4096,
@@ -98,7 +123,6 @@ impl Backend for MlxBackend {
         }
 
         let prefill_tokens;
-        let response_text = self.generate_text(prompt);
         let generated_tokens = response_text.split_whitespace().count().max(1);
 
         if !session.context_text.is_empty() && prompt.starts_with(&session.context_text) {
@@ -164,7 +188,14 @@ impl Backend for MlxBackend {
     }
 
     async fn embed(&self, input: &str) -> Result<EmbeddingResult, CoreError> {
-        Ok(compute_deterministic_embedding(input, 64))
+        if self.default_response.is_some() {
+            Ok(compute_deterministic_embedding(input, 64))
+        } else {
+            Err(LlamaError::Embedding {
+                reason: "MLX runtime is unavailable in this build and no simulated test response was configured; use `--backend llama`".to_string(),
+            }
+            .into())
+        }
     }
 
     async fn embed_for_model(
@@ -285,12 +316,51 @@ mod tests {
     #[test]
     fn test_mlx_backend_load_from_file_validation() {
         let missing = PathBuf::from("/non/existent/model.mlx");
-        assert!(MlxBackend::load_from_file(&missing).is_err());
+        let missing_err = MlxBackend::load_from_file(&missing).unwrap_err();
+        assert!(missing_err.to_string().contains("does not exist on disk"));
 
         let temp_path = create_temp_test_file();
-        let loaded = MlxBackend::load_from_file(&temp_path);
-        assert!(loaded.is_ok());
-        assert_eq!(loaded.unwrap().model_path(), &temp_path);
+        let err = MlxBackend::load_from_file(&temp_path).unwrap_err();
+        let err_msg = err.to_string();
+        if !MlxBackend::is_apple_silicon() {
+            assert!(err_msg.contains("Apple Silicon"));
+            assert!(err_msg.contains("--backend llama"));
+        } else {
+            assert!(err_msg.contains("native MLX runtime bindings"));
+            assert!(err_msg.contains("--backend llama"));
+        }
+        let _ = fs::remove_file(&temp_path);
+    }
+
+    #[tokio::test]
+    async fn test_mlx_backend_without_simulation_fails_explicitly() {
+        let temp_path = create_temp_test_file();
+        let backend = MlxBackend {
+            model_path: temp_path.clone(),
+            default_response: None,
+        };
+        assert_eq!(backend.model_path(), &temp_path);
+
+        let err_complete = backend
+            .complete_with_options("Hello MLX", &CompletionOptions::default())
+            .await
+            .unwrap_err();
+        assert!(!err_complete
+            .to_string()
+            .contains("MLX response for prompt:"));
+        assert!(err_complete.to_string().contains("--backend llama"));
+
+        let mut session = Session::new(SessionId::from("mlx-unsimulated"), "mlx-model");
+        let err_session = backend
+            .complete_session(&mut session, "Hello MLX", &CompletionOptions::default())
+            .await
+            .unwrap_err();
+        assert!(!err_session.to_string().contains("MLX response for prompt:"));
+        assert!(session.backend_handle.is_none());
+
+        let err_embed = backend.embed("test embedding").await.unwrap_err();
+        assert!(err_embed.to_string().contains("--backend llama"));
+
         let _ = fs::remove_file(&temp_path);
     }
 
@@ -334,9 +404,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_mlx_backend_embed() {
+    async fn test_mlx_backend_simulated_embed_and_engine_routing() {
         let temp_path = create_temp_test_file();
-        let backend = MlxBackend::load_from_file(&temp_path).unwrap();
+        let backend =
+            EngineBackend::Mlx(MlxBackend::with_simulated_response(&temp_path, "simulated"));
         let res = backend.embed("test embedding").await.unwrap();
         assert_eq!(res.embedding.len(), 64);
         assert_eq!(res.prompt_tokens, 2);
