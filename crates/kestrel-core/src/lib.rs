@@ -12,6 +12,7 @@ pub mod session;
 pub mod store;
 pub mod tier;
 pub mod traits;
+mod writeback;
 
 pub use error::Error;
 pub use lru::LruCache;
