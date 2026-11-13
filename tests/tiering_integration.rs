@@ -360,7 +360,8 @@ async fn test_acceptance_20_concurrent_sessions_8gb_vram_no_oom() {
         "Warm count should not exceed 8 sessions (4 GiB / 512 MiB)"
     );
 
-    // Cold store must contain the demoted sessions
+    // Cold store must contain the demoted sessions (and flushed write-backs)
+    manager.flush().await.expect("flush failed");
     let cold_sessions = store.list().await.expect("list cold");
     assert_eq!(cold_sessions.len(), NUM_SESSIONS);
 
