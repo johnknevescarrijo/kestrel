@@ -44,6 +44,13 @@ pub enum LlamaError {
         reason: String,
     },
 
+    /// Failed to compute vector embeddings.
+    #[error("failed to compute embeddings: {reason}. Verify the model supports embeddings and input is valid.")]
+    Embedding {
+        /// Underlying error description.
+        reason: String,
+    },
+
     /// Blocking task execution panicked or was cancelled.
     #[error("tokio blocking task failed: {reason}.")]
     TaskJoin {

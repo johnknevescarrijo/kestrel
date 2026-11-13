@@ -16,7 +16,9 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 enum BackendKind {
+    /// Native GGUF inference via llama.cpp
     Llama,
+    /// Apple Silicon (macOS aarch64) MLX backend (requires native MLX runtime bindings, not linked in this build)
     Mlx,
 }
 
@@ -55,7 +57,7 @@ struct ServeArgs {
     #[arg(short, long, default_value = "./models/qwen2.5-0.5b-q4.gguf")]
     model: PathBuf,
 
-    /// Execution backend engine (llama.cpp or mlx)
+    /// Execution backend engine ('llama' for llama.cpp; 'mlx' is Apple Silicon macOS aarch64 only and requires native MLX runtime bindings not linked in this build)
     #[arg(long, value_enum, default_value_t = BackendKind::Llama)]
     backend: BackendKind,
 
@@ -97,7 +99,7 @@ struct CompleteArgs {
     #[arg(short, long, default_value = "./models/qwen2.5-0.5b-q4.gguf")]
     model: PathBuf,
 
-    /// Execution backend engine (llama.cpp or mlx)
+    /// Execution backend engine ('llama' for llama.cpp; 'mlx' is Apple Silicon macOS aarch64 only and requires native MLX runtime bindings not linked in this build)
     #[arg(long, value_enum, default_value_t = BackendKind::Llama)]
     backend: BackendKind,
 

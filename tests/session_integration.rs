@@ -88,6 +88,7 @@ async fn test_session_lru_eviction_and_restoration_from_disk() {
     assert_eq!(manager.hot_session_count().await, 1);
 
     // Confirm session A snapshot was saved to disk
+    manager.flush().await.expect("flush failed");
     let loaded_a = store.load(&sess_a).await.expect("store read failed");
     assert!(loaded_a.is_some(), "session A must be in cold storage");
     let snapshot_a = loaded_a.unwrap();
@@ -110,6 +111,7 @@ async fn test_session_lru_eviction_and_restoration_from_disk() {
 
     // Session A is now back in hot cache, evicting session B to disk
     assert_eq!(manager.hot_session_count().await, 1);
+    manager.flush().await.expect("flush failed");
     let loaded_b = store.load(&sess_b).await.expect("store read failed");
     assert!(loaded_b.is_some(), "session B must now be in cold storage");
 }
@@ -130,6 +132,7 @@ async fn test_session_kv_state_populated_and_persisted() {
         .expect("completion failed");
     assert_eq!(res.text, "World!");
 
+    manager.flush().await.expect("flush failed");
     let snapshot = store
         .load(&session_id)
         .await
