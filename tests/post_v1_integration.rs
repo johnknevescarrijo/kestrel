@@ -18,7 +18,7 @@ use kestrel_core::traits::{
     compute_deterministic_embedding, Backend, CompletionOptions, CompletionResult, EmbeddingResult,
 };
 use kestrel_core::{Error, ModelRouter, SessionId, SessionManager};
-use kestrel_llama::MlxBackend;
+use kestrel_llama::{EngineBackend, MlxBackend};
 use kestrel_server::types::{
     ChatCompletionRequest, ChatCompletionResponse, ChatMessage, EmbeddingResponse,
     JsonSchemaConfig, ModelListResponse, ResponseFormat,
@@ -405,12 +405,39 @@ async fn test_multi_model_router_and_not_found() {
 }
 
 #[tokio::test]
+async fn test_mlx_backend_load_from_file_fails_honestly() {
+    let dir = tempdir().unwrap();
+    let fake_mlx_model = dir.path().join("model.mlx");
+    std::fs::write(&fake_mlx_model, b"mlx_weights_v1").unwrap();
+
+    let err = MlxBackend::load_from_file(&fake_mlx_model).unwrap_err();
+    let err_msg = err.to_string();
+    assert!(
+        !err_msg.contains("MLX response for prompt:"),
+        "error message must not contain simulated response text"
+    );
+    assert!(
+        err_msg.contains("--backend llama"),
+        "expected actionable fallback hint in error: {err_msg}"
+    );
+    if !MlxBackend::is_apple_silicon() {
+        assert!(
+            err_msg.contains("Apple Silicon"),
+            "expected Apple Silicon platform check in error: {err_msg}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn test_mlx_backend_prefix_reuse_and_embeddings() {
     let dir = tempdir().unwrap();
     let fake_mlx_model = dir.path().join("model.mlx");
     std::fs::write(&fake_mlx_model, b"mlx_weights_v1").unwrap();
 
-    let backend = MlxBackend::load_from_file(&fake_mlx_model).unwrap();
+    let backend = EngineBackend::Mlx(MlxBackend::with_simulated_response(
+        &fake_mlx_model,
+        "Hi! I am doing well.",
+    ));
 
     // 1. Session execution and prefix reuse
     let mut session = Session::new(SessionId::from("mlx-sess-1"), "model.mlx");
@@ -422,6 +449,7 @@ async fn test_mlx_backend_prefix_reuse_and_embeddings() {
         .unwrap();
     assert!(res1.prefill_tokens > 0);
     assert!(res1.generated_tokens > 0);
+    assert_eq!(res1.text, "Hi! I am doing well.");
 
     let res2 = backend
         .complete_session(
@@ -437,7 +465,7 @@ async fn test_mlx_backend_prefix_reuse_and_embeddings() {
             < "System: Assistant\nUser: Hello\nAssistant: Hi\nUser: How are you?".len()
     );
 
-    // 2. Vector embedding generation
+    // 2. Vector embedding generation (explicitly simulated in test mode)
     let emb = backend.embed("Test embedding text for MLX").await.unwrap();
     assert_eq!(emb.embedding.len(), 64);
     assert!(emb.prompt_tokens > 0);
